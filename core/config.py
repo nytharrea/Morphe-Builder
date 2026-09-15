@@ -55,6 +55,7 @@ APKMIRROR_APPS: list[str] = [
     "proton-pass",
     "notesnook",
     "termius",
+    "instagram",
 ]
 
 APPS_CONFIG: dict[str, AppConfig] = {
