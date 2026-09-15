@@ -1,0 +1,3 @@
+{
+  "_comment": "Optional SHA-256 pins for desktop/patch/MicroG-style GitHub assets. Missing entries are ignored. Shape: {"owner/repo/asset": "sha256"}."
+}

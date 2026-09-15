@@ -1,0 +1,9 @@
+camoufox
+playwright==1.61.0
+curl_cffi
+tenacity
+loguru
+androguard
+cryptography
+apprise
+pydantic-settings
