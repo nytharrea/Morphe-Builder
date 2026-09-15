@@ -7,6 +7,7 @@ from core.patch_tools import download_latest_github_asset
 from core.release import (
     create_new_release,
     delete_other_releases,
+    get_release_by_tag,
     upload_microg_once,
     upload_patched_apk,
     upload_pothelper_once,
@@ -166,10 +167,18 @@ async def main():
             log.warn(f"Could not fetch release notes for {label}: {e}")
 
     log.step(f"Creating release: {release_tag}")
-    release = await create_new_release(release_tag, release_name, body, draft=False)
-    log.success(f"Release created: {release['tag_name']} (id={release['id']})")
+    release = await get_release_by_tag(release_tag)
+    if release is not None:
+        log.warn(f"Release {release_tag} already exists (id={release['id']}); adding missing assets.")
+    else:
+        release = await create_new_release(release_tag, release_name, body, draft=False)
+        log.success(f"Release created: {release['tag_name']} (id={release['id']})")
 
+    existing_assets = {a["name"] for a in release.get("assets", [])}
     for apk in matched:
+        if apk["name"] in existing_assets:
+            log.info(f"Skipping {apk['name']} (already uploaded)")
+            continue
         await upload_patched_apk(release, apk["path"])
 
     if any(apk["app_key"] in ("youtube", "youtube-music") for apk in matched):

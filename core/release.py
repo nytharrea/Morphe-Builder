@@ -47,6 +47,21 @@ async def create_new_release(tag: str, release_name: str, release_body: str = ""
     return data
 
 
+async def get_release_by_tag(tag: str) -> dict | None:
+    _assert_configured()
+    async with new_session(timeout=30) as client:
+        res = await client.get(
+            f"https://api.github.com/repos/{settings.github_repository}/releases/tags/{tag}",
+            headers=HEADERS,
+        )
+        if res.status_code == 404:
+            return None
+        data = res.json()
+    if not isinstance(data, dict) or "id" not in data:
+        return None
+    return data
+
+
 async def list_releases() -> list[dict]:
     async with new_session(timeout=30) as client:
         res = await client.get(
