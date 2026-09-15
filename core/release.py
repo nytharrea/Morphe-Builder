@@ -62,6 +62,21 @@ async def get_release_by_tag(tag: str) -> dict | None:
     return data
 
 
+async def update_release(release_id: int, release_name: str, release_body: str) -> dict:
+    _assert_configured()
+    log.step(f"Updating release {release_id}")
+    async with new_session(timeout=30) as client:
+        res = await client.patch(
+            f"https://api.github.com/repos/{settings.github_repository}/releases/{release_id}",
+            headers=HEADERS,
+            json={"name": release_name, "body": release_body},
+        )
+        data = res.json()
+    if not isinstance(data, dict) or "id" not in data:
+        raise RuntimeError(f"Failed to update release: {data}")
+    return data
+
+
 async def list_releases() -> list[dict]:
     async with new_session(timeout=30) as client:
         res = await client.get(

@@ -8,6 +8,7 @@ from core.release import (
     create_new_release,
     delete_other_releases,
     get_release_by_tag,
+    update_release,
     upload_microg_once,
     upload_patched_apk,
     upload_pothelper_once,
@@ -169,7 +170,10 @@ async def main():
     log.step(f"Creating release: {release_tag}")
     release = await get_release_by_tag(release_tag)
     if release is not None:
-        log.warn(f"Release {release_tag} already exists (id={release['id']}); adding missing assets.")
+        log.warn(
+            f"Release {release_tag} already exists (id={release['id']}); refreshing notes and adding missing assets."
+        )
+        release = await update_release(release["id"], release_name, body)
     else:
         release = await create_new_release(release_tag, release_name, body, draft=False)
         log.success(f"Release created: {release['tag_name']} (id={release['id']})")
