@@ -36,7 +36,6 @@ DISPLAY_NAMES: dict[str, str] = {
     "inure-play": "inure-PlayStore",
     "proton-pass": "Proton Pass",
     "notesnook": "Notesnook",
-    "termius": "Termius",
     "twitter-x": "Twitter-X",
 }
 
@@ -54,8 +53,6 @@ APKMIRROR_APPS: list[str] = [
     "google-photos",
     "proton-pass",
     "notesnook",
-    "termius",
-    "instagram",
 ]
 
 APPS_CONFIG: dict[str, AppConfig] = {
@@ -241,14 +238,6 @@ APPS_CONFIG: dict[str, AppConfig] = {
         "icon": "https://www.google.com/s2/favicons?sz=128&domain=notesnook.com",
         "exclude": [],
     },
-    "termius": {
-        "pkg": "com.server.auditor.ssh.client",
-        "name": "termius",
-        "patch_source": "rushi",
-        "arch": "arm64-v8a",
-        "icon": "https://www.google.com/s2/favicons?sz=128&domain=termius.com",
-        "exclude": [],
-    },
 }
 
 PROCESS_ORDER: list[str] = [
@@ -272,7 +261,6 @@ PROCESS_ORDER: list[str] = [
     "inure-play",
     "proton-pass",
     "notesnook",
-    "termius",
 ]
 
 PATCH_SOURCES: dict[str, tuple[str, str, str]] = {
