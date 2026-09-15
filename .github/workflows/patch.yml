@@ -1,4 +1,4 @@
-name: Patch
+name: Patch App
 
 on:
   workflow_dispatch:
