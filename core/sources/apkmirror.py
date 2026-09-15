@@ -51,11 +51,6 @@ APP_SITES = {
         "slug": "notesnook-private-notes-app",
         "release_slug": "notesnook-secure-private-notes",
     },
-    "termius": {
-        "org": "termius-corporation",
-        "slug": "termius-ssh-telnet-client",
-        "release_slug": "termius-modern-ssh-client",
-    },
 }
 
 DIAGNOSTICS_DIR = Path(__file__).resolve().parent.parent.parent / "diagnostics"
