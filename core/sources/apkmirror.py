@@ -12,6 +12,7 @@ from urllib.parse import urljoin
 from curl_cffi.requests import AsyncSession
 from lxml import html as lxml_html
 from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt
+from tenacity.stop import stop_base
 
 from .. import flaresolverr, log
 from .. import retry as retry_conf
@@ -79,6 +80,17 @@ def _register_challenge() -> float:
     return cooldown
 
 
+class _BudgetExceeded(stop_base):
+    def __init__(self, deadline: float | None):
+        self.deadline = deadline
+
+    def __call__(self, retry_state) -> bool:
+        if self.deadline is None or retry_state.outcome is None:
+            return False
+        sleep = retry_state.next_action.sleep if retry_state.next_action else 0.0
+        return time.monotonic() + sleep >= self.deadline
+
+
 async def _get(url: str, *, label: str, deadline: float | None = None) -> dict[str, Any]:
     await _apply_global_cooldown()
     try:
@@ -100,17 +112,7 @@ async def _get(url: str, *, label: str, deadline: float | None = None) -> dict[s
             f"Challenge still present ({label}); backing off {cooldown:.0f}s and continuing with returned HTML."
         )
         return await flaresolverr.request_get(url)
-
-
-class _BudgetExceeded:
-    def __init__(self, deadline: float | None):
-        self.deadline = deadline
-
-    def __call__(self, retry_state) -> bool:
-        if self.deadline is None or retry_state.outcome is None:
-            return False
-        sleep = retry_state.next_action.sleep if retry_state.next_action else 0.0
-        return time.monotonic() + sleep >= self.deadline
+    raise flaresolverr.FlareSolverrError(f"Could not fetch {label} from APKMirror")
 
 
 def _html_document(solution: dict[str, Any]):
@@ -353,7 +355,7 @@ async def _download_file(url: str, out_path: Path, solution: dict[str, Any]) -> 
     headers = _download_headers(solution)
     file_name = out_path.name
     async with (
-        AsyncSession(timeout=None, allow_redirects=True, impersonate="firefox", headers=headers) as client,
+        AsyncSession(timeout=None, allow_redirects=True, impersonate="firefox", headers=headers) as client,  # type: ignore[arg-type]
         client.stream("GET", url) as res,
     ):
         if res.status_code >= 400:
@@ -438,7 +440,8 @@ async def download_apk(version: str, app_name: str = "youtube", force_build: str
         variant_solution = await _get(variant_url, label="variant-page")
 
     assert variant_solution is not None
-    file_url = await _resolve_file_url(variant_url, variant_solution)
+    resolved_variant_url: str = variant_url
+    file_url = await _resolve_file_url(resolved_variant_url, variant_solution)
     log.download(f"Downloading: {file_url}")
 
     file_name = Path(file_url.split("?")[0]).name or f"{app_name}-{version}.apk"
