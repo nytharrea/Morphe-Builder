@@ -116,7 +116,6 @@ APPS_CONFIG: dict[str, AppConfig] = {
         "patch_source": "piko",
         "arch": "arm64-v8a",
         "icon": "https://cdn.simpleicons.org/instagram/E4405F",
-        "force_build": "384510827",
     },
     "gboard": {
         "pkg": "com.google.android.inputmethod.latin",
