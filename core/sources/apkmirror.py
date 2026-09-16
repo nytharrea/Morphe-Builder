@@ -228,8 +228,39 @@ def _extract_variant_url(
         "arm64-v8a + armeabi",
     )
 
+    def instagram_bundle_score(
+        name_text: str, arch_text: str, android_text: str, dpi_text: str, is_bundle: bool
+    ) -> int:
+        """Instagram publishes many arm64 split bundles; pick the patch-friendly one.
+
+        APKMirror rows such as "arm64-v8a / Android 9.0+ / 480dpi / BUNDLE / 1 S"
+        are the ones the Piko/Morphe patches expect. Broad ranges like
+        "480-640dpi" or "213-480dpi" and multi-split rows are less stable.
+        """
+        score = 0
+        if is_bundle:
+            score += 100
+        if "arm64-v8a" in arch_text:
+            score += 60
+        if "9.0+" in android_text:
+            score += 40
+        normalized_dpi = dpi_text.replace(" ", "")
+        if normalized_dpi == "480dpi":
+            score += 30
+        elif "480dpi" in normalized_dpi and "-" not in normalized_dpi:
+            score += 25
+        elif "nodpi" in normalized_dpi:
+            score += 10
+        elif "-" in normalized_dpi:
+            score += 5
+        split_match = re.search(r"\b(\d+)\s*[sS]\b", name_text)
+        if split_match:
+            # Fewer split APKs is better; keep this secondary to arch/Android/DPI.
+            score += max(0, 20 - int(split_match.group(1)))
+        return score
+
     def collect(use_force_build: bool) -> str | None:
-        candidates: list[str | None] = [None] * 8
+        candidates: list[tuple[int, str] | None] = [None] * 8
         for row in rows:
             cells = row.xpath(".//*[contains(@class,'table-cell')]")
             if len(cells) < 4:
@@ -245,6 +276,7 @@ def _extract_variant_url(
             if app_name == "instagram" and not is_bundle:
                 continue
             arch_text = _text(cells[1]).lower()
+            android_text = _text(cells[2]).lower() if len(cells) > 2 else ""
             dpi_text = _text(cells[3]).lower()
             is_target_arch = not arch_text or any(a in arch_text for a in allowed_archs)
             if not is_target_arch:
@@ -260,9 +292,19 @@ def _extract_variant_url(
                 slot = 4 if is_bundle else 5
             else:
                 slot = 6 if is_bundle else 7
-            if candidates[slot] is None:
-                candidates[slot] = _absolute(hrefs[0], base_url)
-        return next((c for c in candidates if c), None)
+
+            candidate = _absolute(hrefs[0], base_url)
+            if not candidate:
+                continue
+            score = 0
+            if app_name == "instagram":
+                score = instagram_bundle_score(name_text, arch_text, android_text, dpi_text, is_bundle)
+            current = candidates[slot]
+            if current is None or score > current[0]:
+                candidates[slot] = (score, candidate)
+        return next(
+            (candidate for candidate in (item[1] if item else None for item in candidates) if candidate), None
+        )
 
     result = collect(True)
     if not result and force_build:
