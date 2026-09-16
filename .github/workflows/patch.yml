@@ -166,6 +166,7 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
           REQUIRE_CUSTOM_KEYSTORE: "true"
           VERSION_POLICY: "max_patches_then_version"
+          INCLUDE_EXPERIMENTAL_VERSIONS: "true"
           FLARESOLVERR_URL: http://127.0.0.1:8191
           FLARESOLVERR_MAX_TIMEOUT_MS: "60000"
           FLARESOLVERR_SESSION: morphe-apkmirror

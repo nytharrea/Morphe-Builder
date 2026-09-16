@@ -214,6 +214,41 @@ def _text(node) -> str:
     return " ".join(t.strip() for t in node.xpath(".//text()") if t.strip())
 
 
+def _row_build_number(name_text: str) -> str | None:
+    match = re.search(r"\b(\d{6,})\b", name_text)
+    return match.group(1) if match else None
+
+
+def _variant_priority(is_bundle: bool, arch_text: str, dpi_text: str) -> int:
+    """APKMirror selection order matching the known-good fork.
+
+    Prefer the universal .apkm bundle because Morphe's --striplibs derives the
+    requested architecture from the complete split set. A narrow APK/base split
+    can miss resources and fail patching.
+    """
+    arch = arch_text.lower()
+    dpi = dpi_text.lower()
+    universal = "universal" in arch or "evrensel" in arch or "noarch" in arch
+    nodpi = not dpi or "nodpi" in dpi
+    anydpi = "anydpi" in dpi
+
+    if is_bundle and universal:
+        return 0
+    if is_bundle and "arm64-v8a" in arch:
+        return 1
+    if not is_bundle and universal:
+        return 2
+    if is_bundle and nodpi:
+        return 3
+    if not is_bundle and nodpi:
+        return 4
+    if is_bundle and anydpi:
+        return 5
+    if not is_bundle and anydpi:
+        return 6
+    return 7 if is_bundle else 8
+
+
 def _extract_variant_url(
     solution: dict[str, Any], force_build: str | None, app_name: str, base_url: str
 ) -> str | None:
@@ -231,12 +266,7 @@ def _extract_variant_url(
     def instagram_bundle_score(
         name_text: str, arch_text: str, android_text: str, dpi_text: str, is_bundle: bool
     ) -> int:
-        """Instagram publishes many arm64 split bundles; pick the patch-friendly one.
-
-        APKMirror rows such as "arm64-v8a / Android 9.0+ / 480dpi / BUNDLE / 1 S"
-        are the ones the Piko/Morphe patches expect. Broad ranges like
-        "480-640dpi" or "213-480dpi" and multi-split rows are less stable.
-        """
+        """Tie-breaker for architecture-specific bundles when no universal bundle exists."""
         score = 0
         if is_bundle:
             score += 100
@@ -255,12 +285,11 @@ def _extract_variant_url(
             score += 5
         split_match = re.search(r"\b(\d+)\s*[sS]\b", name_text)
         if split_match:
-            # Fewer split APKs is better; keep this secondary to arch/Android/DPI.
             score += max(0, 20 - int(split_match.group(1)))
         return score
 
     def collect(use_force_build: bool) -> str | None:
-        candidates: list[tuple[int, str] | None] = [None] * 8
+        best: tuple[int, int, str] | None = None
         for row in rows:
             cells = row.xpath(".//*[contains(@class,'table-cell')]")
             if len(cells) < 4:
@@ -269,7 +298,8 @@ def _extract_variant_url(
             if not hrefs:
                 continue
             name_text = _text(cells[0])
-            if use_force_build and force_build and force_build not in name_text:
+            row_build = _row_build_number(name_text)
+            if use_force_build and force_build and row_build != force_build:
                 continue
             badge_text = " ".join(cells[0].xpath(".//*[contains(@class,'apkm-badge')]//text()")).upper()
             is_bundle = "BUNDLE" in badge_text or "PAKET" in badge_text
@@ -278,33 +308,20 @@ def _extract_variant_url(
             arch_text = _text(cells[1]).lower()
             android_text = _text(cells[2]).lower() if len(cells) > 2 else ""
             dpi_text = _text(cells[3]).lower()
-            is_target_arch = not arch_text or any(a in arch_text for a in allowed_archs)
-            if not is_target_arch:
+            if arch_text and not any(a in arch_text for a in allowed_archs):
                 continue
-            is_universal = "universal" in arch_text or "evrensel" in arch_text
-            is_nodpi = not dpi_text or "nodpi" in dpi_text
-            is_anydpi = "anydpi" in dpi_text
-            if is_universal:
-                slot = 0 if is_bundle else 1
-            elif is_nodpi:
-                slot = 2 if is_bundle else 3
-            elif is_anydpi:
-                slot = 4 if is_bundle else 5
-            else:
-                slot = 6 if is_bundle else 7
 
             candidate = _absolute(hrefs[0], base_url)
             if not candidate:
                 continue
+            priority = _variant_priority(is_bundle, arch_text, dpi_text)
             score = 0
-            if app_name == "instagram":
+            if app_name == "instagram" and priority > 0:
                 score = instagram_bundle_score(name_text, arch_text, android_text, dpi_text, is_bundle)
-            current = candidates[slot]
-            if current is None or score > current[0]:
-                candidates[slot] = (score, candidate)
-        return next(
-            (candidate for candidate in (item[1] if item else None for item in candidates) if candidate), None
-        )
+            current = (priority, score, candidate)
+            if best is None or current[:2] < best[:2]:
+                best = current
+        return best[2] if best else None
 
     result = collect(True)
     if not result and force_build:
@@ -320,8 +337,10 @@ def _dump_variant_rows_for_debug(solution: dict[str, Any]) -> None:
         for i, row in enumerate(rows):
             cells = row.xpath(".//*[contains(@class,'table-cell')]")
             log.info(
-                f"   [{i}] cells={len(cells)} name={_text(cells[0])[:60]!r} "
+                f"   [{i}] cells={len(cells)} name={_text(cells[0])[:80]!r} "
+                f"build={_row_build_number(_text(cells[0]))!r} "
                 f"arch={_text(cells[1]) if len(cells) > 1 else ''!r} "
+                f"android={_text(cells[2]) if len(cells) > 2 else ''!r} "
                 f"dpi={_text(cells[3]) if len(cells) > 3 else ''!r}"
             )
     except Exception as e:
@@ -356,11 +375,12 @@ def _looks_like_apk_container(path: Path) -> bool:
         return False
 
 
-def _extract_base_apk_if_needed(path: Path) -> Path:
-    """APKMirror sometimes serves an .apkm/.xapk bundle from download.php.
+def _normalize_bundle_if_needed(path: Path) -> Path:
+    """Return a patchable APK/APKM path without dropping split resources.
 
-    Morphe Desktop expects a real APK with AndroidManifest.xml at the ZIP root.
-    If the downloaded container is a bundle, extract base.apk and return that.
+    Morphe Desktop can patch an APKMirror .apkm bundle directly when --striplibs
+    is used. Extracting only base.apk loses density/language/resource splits and
+    causes missing-resource/fingerprint failures, so keep the whole bundle.
     """
     if not zipfile.is_zipfile(path):
         if _looks_like_apk_container(path):
@@ -376,12 +396,15 @@ def _extract_base_apk_if_needed(path: Path) -> Path:
             candidates = [n for n in names if n.endswith(".apk")]
         if not candidates:
             raise RuntimeError(f"Downloaded bundle has no base.apk/AndroidManifest.xml: {path.name}")
-        extracted = zf.read(candidates[0])
 
-    base_path = path.with_name(f"{path.stem}-base.apk")
-    base_path.write_bytes(extracted)
-    log.info(f"Extracted base APK from bundle: {base_path.name}")
-    return base_path
+    if path.suffix.lower() not in {".apkm", ".xapk"}:
+        bundle_path = path.with_suffix(".apkm")
+        if bundle_path.exists():
+            bundle_path.unlink()
+        path.rename(bundle_path)
+        log.info(f"Detected split bundle; renamed patch input to {bundle_path.name}")
+        return bundle_path
+    return path
 
 
 def _download_headers(solution: dict[str, Any]) -> dict[str, str]:
@@ -435,10 +458,7 @@ async def _download_once(url: str, out_path: Path, solution: dict[str, Any]) -> 
 
     final_path = out_path.with_name(file_name)
     temp_path.replace(final_path)
-    patched_input = _extract_base_apk_if_needed(final_path)
-    if patched_input != final_path:
-        log.info(f"Downloaded bundle container kept at {final_path.name}; using extracted APK for patching")
-    return patched_input
+    return _normalize_bundle_if_needed(final_path)
 
 
 async def _download_file(url: str, out_path: Path, solution: dict[str, Any]) -> Path:
@@ -468,7 +488,7 @@ async def _resolve_file_url(variant_url: str, solution: dict[str, Any]) -> str:
         raise RuntimeError("Could not resolve download button URL")
 
     if confirm_url.lower().endswith(".apk") or "download.php" in confirm_url:
-        return _with_force_base_apk(confirm_url)
+        return confirm_url
 
     confirm_solution = await _get(confirm_url, label="download-confirm")
     confirm_doc = _html_document(confirm_solution)
@@ -482,7 +502,7 @@ async def _resolve_file_url(variant_url: str, solution: dict[str, Any]) -> str:
     file_url = _absolute(final_hrefs[0], confirm_url)
     if not file_url:
         raise RuntimeError("Could not resolve final download URL")
-    return _with_force_base_apk(file_url)
+    return file_url
 
 
 async def download_apk(version: str, app_name: str = "youtube", force_build: str | None = None) -> str:

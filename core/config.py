@@ -116,6 +116,7 @@ APPS_CONFIG: dict[str, AppConfig] = {
         "patch_source": "piko",
         "arch": "arm64-v8a",
         "icon": "https://cdn.simpleicons.org/instagram/E4405F",
+        "force_build": "384510827",
     },
     "gboard": {
         "pkg": "com.google.android.inputmethod.latin",
@@ -146,7 +147,6 @@ APPS_CONFIG: dict[str, AppConfig] = {
         "patch_source": "dh6k",
         "arch": "arm64-v8a",
         "icon": "https://cdn.simpleicons.org/brave/FB542B",
-        "force_version": "1.92.140",
         "exclude": [],
     },
     "proton-vpn": {

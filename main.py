@@ -47,6 +47,8 @@ async def process_app(
             patch_flags = []
             for p in patches:
                 patch_flags += ["--patches", p]
+            if settings.include_experimental_versions:
+                patch_flags.append("--include-experimental")
 
             result = subprocess.run(
                 [
@@ -57,7 +59,6 @@ async def process_app(
                     "-f",
                     config["pkg"],
                     *patch_flags,
-                    "--include-experimental",
                 ],
                 capture_output=True,
                 text=True,

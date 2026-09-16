@@ -59,6 +59,9 @@ class Settings(BaseSettings):
     # the workflow opts into stricter release behaviour explicitly.
     require_custom_keystore: bool = False
     version_policy: str = "max_patches_then_version"
+    # Morphe Desktop marks some versions as experimental. The builder prefers
+    # trying newer releases first; set this to false for stable-only lists.
+    include_experimental_versions: bool = True
     release_keep_latest: int = 3
     pinned_assets_path: Path = Field(default_factory=lambda: Path.cwd() / "data" / "pinned_assets.json")
 
