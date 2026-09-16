@@ -1,6 +1,6 @@
+from __future__ import annotations
+
 import asyncio
-import contextlib
-import json
 import random
 import re
 import time
@@ -8,16 +8,14 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin
 
-from camoufox.async_api import AsyncCamoufox
-from playwright.async_api import Error as PlaywrightError
-from playwright.async_api import Page
-from tenacity import AsyncRetrying, retry, retry_if_exception_type, stop_after_attempt
-from tenacity.stop import stop_base
-from tenacity.wait import wait_base
+from curl_cffi.requests import AsyncSession
+from lxml import html as lxml_html
+from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt
 
-from .. import log
+from .. import flaresolverr, log
 from .. import retry as retry_conf
 from ..apk.versions import to_apkmirror_version
+from ..settings import settings
 
 APP_SITES = {
     "youtube": {"org": "google-inc", "slug": "youtube"},
@@ -54,24 +52,9 @@ APP_SITES = {
 }
 
 DIAGNOSTICS_DIR = Path(__file__).resolve().parent.parent.parent / "diagnostics"
-
 RESOLVE_BUDGET_SECONDS = 300.0
+BASE_URL = "https://www.apkmirror.com"
 
-_CHALLENGE_MARKERS = [
-    "just a moment",
-    "checking your browser",
-    "attention required! | cloudflare",
-    "verify you are human",
-    "cf-browser-verification",
-    "cf_chl_",
-    "ddos protection by cloudflare",
-    "performing security verification",
-    "verifies you are not a bot",
-]
-
-_camoufox_stack: contextlib.AsyncExitStack | None = None
-_shared_browser = None
-_shared_page: Page | None = None
 _challenge_hits = 0
 _cooldown_until = 0.0
 
@@ -80,198 +63,100 @@ async def _jitter_sleep(base: float, spread: float = 0.6) -> None:
     await asyncio.sleep(base + random.uniform(0, spread))
 
 
-@retry(
-    stop=stop_after_attempt(6),
-    wait=retry_conf.incrementing(start=1.5, increment=1.5, max=8.0),
-    before_sleep=retry_conf.before_sleep("Could not start browser"),
-    reraise=True,
-)
-async def _start_browser():
-    log.info("Launching Camoufox (Firefox)...")
-    stack = contextlib.AsyncExitStack()
-    browser = await stack.enter_async_context(AsyncCamoufox(headless=True, humanize=True))
-    return stack, browser
-
-
-async def get_browser():
-    global _camoufox_stack, _shared_browser
-    if _shared_browser is not None:
-        return _shared_browser
-    _camoufox_stack, _shared_browser = await _start_browser()
-    return _shared_browser
-
-
-async def get_page() -> Page:
-    """A single shared page for the whole run, the same way the old code
-    reused one `main_tab` - opening a fresh `browser.new_page()` per call
-    would each get its own isolated context and lose the Cloudflare
-    clearance cookie between e.g. a listing lookup and the download that
-    follows it."""
-    global _shared_page
-    browser = await get_browser()
-    if _shared_page is None or _shared_page.is_closed():
-        _shared_page = await browser.new_page()
-    return _shared_page
-
-
-async def close_browser():
-    global _camoufox_stack, _shared_browser, _shared_page
-    if _camoufox_stack is not None:
-        with contextlib.suppress(Exception):
-            await _camoufox_stack.aclose()
-        _camoufox_stack = None
-        _shared_browser = None
-        _shared_page = None
-
-
-async def _is_challenge_page(page: Page) -> bool:
-    try:
-        content = await page.evaluate(
-            "(document.title + ' ' + document.body.innerText.slice(0, 500)).toLowerCase()"
-        )
-    except Exception:
-        return False
-    if not content:
-        return False
-    return any(marker in content for marker in _CHALLENGE_MARKERS)
-
-
-async def _save_diagnostic_screenshot(page: Page, label: str):
-    try:
-        DIAGNOSTICS_DIR.mkdir(parents=True, exist_ok=True)
-        ts = int(time.time())
-        path = DIAGNOSTICS_DIR / f"{label}-{ts}.png"
-        await page.screenshot(path=str(path))
-        log.info(f"Diagnostic screenshot saved: {path}")
-    except Exception as e:
-        log.warn(f"Could not capture screenshot: {e}")
-
-
-async def _apply_global_cooldown():
-    now = time.monotonic()
-    if now < _cooldown_until:
-        remaining = _cooldown_until - now
-        log.wait(f"Global cooldown active, waiting {remaining:.0f}s...")
+async def _apply_global_cooldown() -> None:
+    remaining = _cooldown_until - time.monotonic()
+    if remaining > 0:
+        log.wait(f"Global APKMirror cooldown active, sleeping {remaining:.0f}s...")
         await asyncio.sleep(remaining)
 
 
-class _ChallengePresent(Exception):
-    """Raised internally when the page we just loaded is a Cloudflare
-    challenge. Carries the escalated cooldown so the wait/stop strategies
-    below don't have to recompute (and re-escalate) it themselves."""
-
-    def __init__(self, cooldown: float):
-        super().__init__("Cloudflare challenge page detected")
-        self.cooldown = cooldown
-
-
 def _register_challenge() -> float:
-    """Escalate the cooldown shared by every future call to `_goto` for the
-    rest of this run (mirrors the old module-level bookkeeping), and return
-    how long this particular escalation is."""
     global _challenge_hits, _cooldown_until
     _challenge_hits += 1
-    cooldown = min(15.0 * (2 ** (_challenge_hits - 1)), 120.0)
+    cooldown = min(60.0, 10.0 * _challenge_hits)
     _cooldown_until = time.monotonic() + cooldown
     return cooldown
 
 
-class _ChallengeCooldownWait(wait_base):
-    def __call__(self, retry_state) -> float:
-        exc = retry_state.outcome.exception() if retry_state.outcome else None
-        return exc.cooldown if isinstance(exc, _ChallengePresent) else 0.0
+async def _get(url: str, *, label: str, deadline: float | None = None) -> dict[str, Any]:
+    await _apply_global_cooldown()
+    try:
+        async for attempt in AsyncRetrying(
+            stop=stop_after_attempt(settings.flaresolverr_retries) | _BudgetExceeded(deadline),
+            wait=retry_conf.incrementing(start=2.0, increment=2.0, max=15.0),
+            retry=retry_if_exception_type(flaresolverr.FlareSolverrChallengeError),
+            before_sleep=lambda rs: log.notice(
+                f"FlareSolverr challenge on {label}, cooling down "
+                f"{(rs.next_action.sleep if rs.next_action else 0):.0f}s before retry..."
+            ),
+            reraise=True,
+        ):
+            with attempt:
+                return await flaresolverr.request_get(url)
+    except flaresolverr.FlareSolverrChallengeError:
+        cooldown = _register_challenge()
+        log.warn(
+            f"Challenge still present ({label}); backing off {cooldown:.0f}s and continuing with returned HTML."
+        )
+        return await flaresolverr.request_get(url)
 
 
-class _BudgetExceeded(stop_base):
-    """Stop retrying once waiting out the next cooldown would blow the
-    caller's overall per-version resolve budget."""
-
+class _BudgetExceeded:
     def __init__(self, deadline: float | None):
         self.deadline = deadline
 
     def __call__(self, retry_state) -> bool:
         if self.deadline is None or retry_state.outcome is None:
             return False
-        exc = retry_state.outcome.exception()
-        cooldown = exc.cooldown if isinstance(exc, _ChallengePresent) else 0.0
-        return time.monotonic() + cooldown >= self.deadline
+        sleep = retry_state.next_action.sleep if retry_state.next_action else 0.0
+        return time.monotonic() + sleep >= self.deadline
 
 
-async def _goto(
-    page: Page,
-    url: str,
-    wait: float = 1.2,
-    challenge_retries: int = 3,
-    label: str = "page",
-    deadline: float | None = None,
-):
-    await _apply_global_cooldown()
-
-    try:
-        async for attempt in AsyncRetrying(
-            stop=stop_after_attempt(challenge_retries + 1) | _BudgetExceeded(deadline),
-            wait=_ChallengeCooldownWait(),
-            retry=retry_if_exception_type(_ChallengePresent),
-            before_sleep=lambda rs: log.notice(
-                f"Cloudflare challenge detected ({label}), cooling down "
-                f"{(rs.next_action.sleep if rs.next_action else 0):.0f}s before retrying "
-                f"(challenge #{_challenge_hits} this run)..."
-            ),
-            reraise=True,
-        ):
-            with attempt:
-                await page.goto(url)
-                await _jitter_sleep(wait)
-                if await _is_challenge_page(page):
-                    raise _ChallengePresent(_register_challenge())
-    except _ChallengePresent:
-        log.notice(f"Cloudflare challenge still present ({label}), proceeding anyway...")
-        await _save_diagnostic_screenshot(page, f"cloudflare-{label}")
+def _html_document(solution: dict[str, Any]):
+    response = solution.get("response") or ""
+    return lxml_html.fromstring(response)
 
 
-async def _row_count(page: Page) -> int:
-    try:
-        result = await page.evaluate("document.querySelectorAll('.variants-table .table-row').length")
-        return int(result or 0)
-    except Exception:
-        return 0
+def _absolute(href: str | None, base: str) -> str | None:
+    if not href:
+        return None
+    return urljoin(base, href)
 
 
-async def _is_404_page(page: Page) -> bool:
-    try:
-        content = await page.evaluate("document.title + ' ' + (document.body.innerText || '').slice(0, 300)")
-    except Exception:
-        return False
-    if not content:
-        return False
-    lowered = content.lower()
+def _is_404(solution: dict[str, Any], doc) -> bool:
+    if solution.get("status") == 404:
+        return True
+    title = " ".join(doc.xpath("//title//text()"))
+    body = " ".join(doc.xpath("//body//text()"))[:1000]
+    lowered = f"{title} {body}".lower()
     return "404" in lowered and (
-        "whoops" in lowered or "could not be found" in lowered or "not be found" in lowered
+        "whoops" in lowered or "not be found" in lowered or "could not be found" in lowered
     )
 
 
-async def _page_exists(page: Page, url: str, deadline: float | None = None) -> bool:
+def _row_count(doc) -> int:
+    return len(doc.xpath("//*[contains(@class,'variants-table')]//*[contains(@class,'table-row')]"))
+
+
+def _has_download_button(doc) -> bool:
+    return bool(doc.xpath("//a[contains(@class,'downloadButton')]"))
+
+
+async def _page_exists(url: str, deadline: float | None = None) -> bool:
     try:
-        await _goto(page, url, wait=1.0, label="direct-try", deadline=deadline)
-        if await _is_404_page(page):
+        solution = await _get(url, label="direct-try", deadline=deadline)
+        doc = _html_document(solution)
+        if _is_404(solution, doc):
             return False
-        return (await _row_count(page)) > 0
+        return _row_count(doc) > 0
     except Exception:
         return False
 
 
-async def _has_download_button(page: Page) -> bool:
-    try:
-        result = await page.evaluate("document.querySelectorAll('a.downloadButton').length")
-        return int(result or 0) > 0
-    except Exception:
-        return False
-
-
-async def _resolve_list_url(page: Page, app_config: dict, version: str) -> tuple[str, bool]:
+async def _resolve_list_url(app_config: dict, version: str) -> tuple[str, bool]:
     version_slug = to_apkmirror_version(version)
     name_part = app_config.get("release_slug") or app_config["slug"]
-    folder_url = f"https://www.apkmirror.com/apk/{app_config['org']}/{app_config['slug']}"
+    folder_url = f"{BASE_URL}/apk/{app_config['org']}/{app_config['slug']}"
     deadline = time.monotonic() + RESOLVE_BUDGET_SECONDS
 
     release_slugs = [
@@ -284,224 +169,182 @@ async def _resolve_list_url(page: Page, app_config: dict, version: str) -> tuple
     for slug in release_slugs:
         if time.monotonic() > deadline:
             break
-
         candidate = f"{folder_url}/{slug}/"
         log.search(f"TRY: {candidate}")
-        if await _page_exists(page, candidate, deadline=deadline):
+        if await _page_exists(candidate, deadline=deadline):
             return candidate, False
 
         if time.monotonic() > deadline:
             break
-
         direct_variant = f"{candidate}{name_part}-{version_slug}-android-apk-download/"
         log.search(f"TRY (single-variant direct): {direct_variant}")
         try:
-            await _goto(page, direct_variant, wait=1.0, label="direct-variant-try", deadline=deadline)
-            if not await _is_404_page(page) and await _has_download_button(page):
+            solution = await _get(direct_variant, label="direct-variant-try", deadline=deadline)
+            doc = _html_document(solution)
+            if not _is_404(solution, doc) and _has_download_button(doc):
                 return direct_variant, True
         except Exception:
             pass
 
     if time.monotonic() > deadline:
-        await _save_diagnostic_screenshot(page, f"budget-exceeded-{app_config['slug']}")
         raise RuntimeError(
-            f"Giving up on {app_config['slug']} v{version}: APKMirror kept challenge-walling every "
-            f"attempt (exceeded {RESOLVE_BUDGET_SECONDS:.0f}s resolve budget)"
+            f"Giving up on {app_config['slug']} v{version}: APKMirror/FlareSolverr resolve budget "
+            f"{RESOLVE_BUDGET_SECONDS:.0f}s exceeded."
         )
 
     log.search("No direct match, scanning app listing page...")
     listing_url = f"{folder_url}/"
-
     slug_part = f"-{version_slug}-"
-    js = f"""
-    (() => {{
-        const links = Array.from(document.querySelectorAll("a[href*='-release/']"));
-        const match = links.find(a => {{
-            const href = a.getAttribute('href');
-            return href.includes({json.dumps(slug_part)}) && !href.includes('#');
-        }});
-        return match ? match.href : null;
-    }})()
-    """
-
-    for attempt in range(2):
+    for _attempt in range(2):
         if time.monotonic() > deadline:
             break
-        await _goto(page, listing_url, wait=1.5 + attempt, label="listing-scan", deadline=deadline)
-        found_url = await page.evaluate(js)
-        if found_url:
-            return found_url, False
-
-    await _save_diagnostic_screenshot(page, f"no-match-{app_config['slug']}")
+        solution = await _get(listing_url, label="listing-scan", deadline=deadline)
+        doc = _html_document(solution)
+        for href in doc.xpath("//a[contains(@href,'-release/')]/@href"):
+            href = _absolute(href, listing_url)
+            if href and slug_part in href and "#" not in href:
+                return href, False
     raise RuntimeError(f"No APKMirror release page found for version {version}")
 
 
-async def _dump_variant_rows_for_debug(page: Page):
-    js = """
-    (() => {
-        const rows = document.querySelectorAll('.table-row');
-        const scopedRows = document.querySelectorAll('.variants-table .table-row');
-        return JSON.stringify({
-            rowCount: rows.length,
-            scopedRowCount: scopedRows.length,
-            is404: /404/.test(document.title) || /could not be found/i.test(document.body.innerText || ''),
-            sample: Array.from(rows).slice(0, 20).map(row => {
-                const cells = row.querySelectorAll('.table-cell');
-                return {
-                    cellCount: cells.length,
-                    name: cells[0] ? cells[0].innerText.trim().slice(0, 60) : null,
-                    arch: cells[1] ? cells[1].innerText.trim() : null,
-                    dpi: cells[3] ? cells[3].innerText.trim() : null,
-                };
-            }),
-        });
-    })()
-    """
+def _text(node) -> str:
+    return " ".join(t.strip() for t in node.xpath(".//text()") if t.strip())
+
+
+def _extract_variant_url(
+    solution: dict[str, Any], force_build: str | None, app_name: str, base_url: str
+) -> str | None:
+    doc = _html_document(solution)
+    rows = doc.xpath("//*[contains(@class,'variants-table')]//*[contains(@class,'table-row')]")
+    allowed_archs = (
+        "universal",
+        "evrensel",
+        "noarch",
+        "arm64-v8a",
+        "arm64-v8a + armeabi-v7a",
+        "arm64-v8a + armeabi",
+    )
+
+    def collect(use_force_build: bool) -> str | None:
+        candidates: list[str | None] = [None] * 8
+        for row in rows:
+            cells = row.xpath(".//*[contains(@class,'table-cell')]")
+            if len(cells) < 4:
+                continue
+            hrefs = cells[0].xpath(".//a[contains(@class,'accent_color')]/@href")
+            if not hrefs:
+                continue
+            name_text = _text(cells[0])
+            if use_force_build and force_build and force_build not in name_text:
+                continue
+            badge_text = " ".join(cells[0].xpath(".//*[contains(@class,'apkm-badge')]//text()")).upper()
+            is_bundle = "BUNDLE" in badge_text or "PAKET" in badge_text
+            if app_name == "instagram" and not is_bundle:
+                continue
+            arch_text = _text(cells[1]).lower()
+            dpi_text = _text(cells[3]).lower()
+            is_target_arch = not arch_text or any(a in arch_text for a in allowed_archs)
+            if not is_target_arch:
+                continue
+            is_universal = "universal" in arch_text or "evrensel" in arch_text
+            is_nodpi = not dpi_text or "nodpi" in dpi_text
+            is_anydpi = "anydpi" in dpi_text
+            if is_universal:
+                slot = 0 if is_bundle else 1
+            elif is_nodpi:
+                slot = 2 if is_bundle else 3
+            elif is_anydpi:
+                slot = 4 if is_bundle else 5
+            else:
+                slot = 6 if is_bundle else 7
+            if candidates[slot] is None:
+                candidates[slot] = _absolute(hrefs[0], base_url)
+        return next((c for c in candidates if c), None)
+
+    result = collect(True)
+    if not result and force_build:
+        result = collect(False)
+    return result
+
+
+def _dump_variant_rows_for_debug(solution: dict[str, Any]) -> None:
     try:
-        raw = await page.evaluate(js)
-        info = json.loads(raw) if isinstance(raw, str) else raw
-        log.info(
-            f"Debug: page has {info.get('rowCount', '?')} .table-row elements "
-            f"({info.get('scopedRowCount', '?')} of them inside the real .variants-table), "
-            f"is404: {info.get('is404', '?')}"
-        )
-        for i, row in enumerate(info.get("sample", [])):
+        doc = _html_document(solution)
+        rows = doc.xpath("//*[contains(@class,'table-row')]")[:20]
+        log.info(f"Debug: page has {len(doc.xpath("//*[contains(@class, 'table-row')]"))} .table-row elements")
+        for i, row in enumerate(rows):
+            cells = row.xpath(".//*[contains(@class,'table-cell')]")
             log.info(
-                f"   [{i}] cells={row.get('cellCount')} name={row.get('name')!r} "
-                f"arch={row.get('arch')!r} dpi={row.get('dpi')!r}"
+                f"   [{i}] cells={len(cells)} name={_text(cells[0])[:60]!r} "
+                f"arch={_text(cells[1]) if len(cells) > 1 else ''!r} "
+                f"dpi={_text(cells[3]) if len(cells) > 3 else ''!r}"
             )
     except Exception as e:
         log.warn(f"Could not produce debug dump: {e}")
 
 
-async def _extract_variant_url(page: Page, force_build: str | None, app_name: str) -> str | None:
-    js = f"""
-    (() => {{
-        const rows = document.querySelectorAll('.variants-table .table-row');
-        const allowedArchs = [
-            'universal', 'evrensel', 'noarch', 'arm64-v8a', 'arm64-v8a + armeabi-v7a', 'arm64-v8a + armeabi'
-        ];
-        const forceBuild = {json.dumps(force_build)};
-        const appName = {json.dumps(app_name)};
-
-        function collect(useForceBuild) {{
-            // Slot priority: 0 universal bundle > 1 universal APK > 2 nodpi bundle > 3 nodpi APK > 4 anydpi bundle > 5 anydpi APK > 6 other bundle > 7 other APK
-            const candidates = [null, null, null, null, null, null, null, null];
-
-            for (const row of rows) {{
-                const cells = row.querySelectorAll('.table-cell');
-                if (cells.length < 4) continue;
-
-                const link = cells[0].querySelector('a.accent_color');
-                if (!link) continue;
-
-                if (useForceBuild && forceBuild && !cells[0].innerText.includes(forceBuild)) continue;
-
-                const badge = cells[0].querySelector('.apkm-badge');
-                const badgeText = badge ? badge.innerText.toUpperCase() : '';
-                const isBundle = badgeText.includes('BUNDLE') || badgeText.includes('PAKET');
-
-                if (appName === 'instagram' && !isBundle) continue;
-
-                const archText = (cells[1].innerText || '').trim().toLowerCase();
-                const dpiText = (cells[3].innerText || '').trim().toLowerCase();
-
-                const isTargetArch = archText === '' || allowedArchs.some(a => archText.includes(a));
-                if (!isTargetArch) continue;
-
-                const isUniversal = archText.includes('universal') || archText.includes('evrensel');
-                const isNodpi = dpiText === '' || dpiText.includes('nodpi');
-                const isAnydpi = dpiText.includes('anydpi');
-
-                let slot;
-                if (isUniversal) slot = isBundle ? 0 : 1;
-                else if (isNodpi) slot = isBundle ? 2 : 3;
-                else if (isAnydpi) slot = isBundle ? 4 : 5;
-                else slot = isBundle ? 6 : 7;
-
-                if (!candidates[slot]) candidates[slot] = link.href;
-            }}
-
-            return candidates.find(c => c) || null;
-        }}
-
-        // Pass 1: pinned build number. Pass 2 (only if pinned build not found,
-        // e.g. app updated to a new version): best automatic pick.
-        let result = collect(true);
-        if (!result && forceBuild) result = collect(false);
-        return result;
-    }})()
-    """
-    return await page.evaluate(js)
-
-
-async def _click_and_download(page: Page, selector: str, timeout_ms: float):
-    """Arm Playwright's download listener, click, and return the Download -
-    or None if nothing had started by timeout_ms (APKMirror sometimes shows
-    an interstitial "confirm" page instead of downloading directly)."""
-    href = None
-    with contextlib.suppress(Exception):
-        href = await page.get_attribute(selector, "href")
-
+def _save_diagnostic_html(solution: dict[str, Any], name: str) -> None:
     try:
-        async with page.expect_download(timeout=timeout_ms) as download_info:
-            if href and not href.startswith(("javascript:", "#")):
-                await page.goto(urljoin(page.url, href))
-            else:
-                await page.click(selector)
-        return await download_info.value
-    except PlaywrightError:
-        return None
+        DIAGNOSTICS_DIR.mkdir(parents=True, exist_ok=True)
+        path = DIAGNOSTICS_DIR / f"{int(time.time())}-{name}.html"
+        path.write_text(solution.get("response") or "", encoding="utf-8", errors="replace")
+        log.warn(f"Diagnostic HTML saved: {path}")
+    except Exception as e:
+        log.warn(f"Could not save diagnostic HTML: {e}")
 
 
-async def _click_and_maybe_pop_up(page: Page, selector: str, timeout_ms: float) -> tuple[Any, Page]:
-    """Same as _click_and_download, but also covers APKMirror opening the
-    click's target in a brand-new tab instead of navigating/downloading in
-    the current one. This isn't app-specific - any release can hit it - but
-    it was first seen on APK *bundle* releases (e.g. notesnook): the
-    "Download APK Bundle" button's confirm flow shows up in a fresh tab, so
-    page.expect_download() on the original page never fires and the click
-    looks like a silent no-op - a diagnostic screenshot taken of `page` at
-    that point just shows the untouched variant page, because we were never
-    looking at the tab that actually moved.
-
-    Returns (Download-or-None, page-to-keep-using-from-here-on): the popup
-    if one appeared, otherwise the same `page` that was passed in - the
-    caller should keep using whatever page this returns for anything
-    downstream (the "#download-link" fallback check, error screenshots).
-    """
-    context = page.context
-    pages_before = set(context.pages)
-
-    download = await _click_and_download(page, selector, timeout_ms)
-    if download is not None:
-        return download, page
-
-    new_pages = [p for p in context.pages if p not in pages_before]
-    if not new_pages:
-        return None, page
-
-    popup = new_pages[-1]
-    with contextlib.suppress(Exception):
-        await popup.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
-    return None, popup
+def _download_headers(solution: dict[str, Any]) -> dict[str, str]:
+    headers = {"User-Agent": solution.get("userAgent") or "Mozilla/5.0"}
+    cookies = solution.get("cookies") or []
+    if cookies:
+        headers["Cookie"] = "; ".join(f"{c.get('name')}={c.get('value')}" for c in cookies if c.get("name"))
+    return headers
 
 
-async def _attempt_download(page: Page) -> tuple[Any, Page]:
-    download, page = await _click_and_maybe_pop_up(page, "a.downloadButton", timeout_ms=20_000)
+async def _download_file(url: str, out_path: Path, solution: dict[str, Any]) -> None:
+    temp_path = out_path.with_name(out_path.name + ".part")
+    headers = _download_headers(solution)
+    async with (
+        AsyncSession(timeout=None, follow_redirects=True, impersonate="firefox", headers=headers) as client,
+        client.stream("GET", url) as res,
+    ):
+        if res.status_code >= 400:
+            raise RuntimeError(f"APKMirror download HTTP {res.status_code}")
+        with open(temp_path, "wb") as f:
+            async for chunk in res.aiter_content():
+                f.write(chunk)
+    size = temp_path.stat().st_size
+    if size < 1024:
+        temp_path.unlink(missing_ok=True)
+        raise RuntimeError(f"Downloaded file too small ({size} bytes)")
+    temp_path.replace(out_path)
 
-    if download is None:
-        log.notice("Direct download did not start, waiting for confirm page...")
-        await _jitter_sleep(1.5)
 
-        if await page.locator("#download-link").count() > 0:
-            log.browser("Clicking final download link...")
-            download, page = await _click_and_maybe_pop_up(page, "#download-link", timeout_ms=60_000)
+async def _resolve_file_url(variant_url: str, solution: dict[str, Any]) -> str:
+    doc = _html_document(solution)
+    hrefs = doc.xpath("//a[contains(@class,'downloadButton')]/@href")
+    if not hrefs:
+        raise RuntimeError(f"No a.downloadButton found on variant page: {variant_url}")
+    confirm_url = _absolute(hrefs[0], variant_url)
+    if not confirm_url:
+        raise RuntimeError("Could not resolve download button URL")
 
-    if download is None:
-        raise _ChallengePresent(_register_challenge())
+    if confirm_url.lower().endswith(".apk") or "download.php" in confirm_url:
+        return confirm_url
 
-    return download, page
+    confirm_solution = await _get(confirm_url, label="download-confirm")
+    confirm_doc = _html_document(confirm_solution)
+    final_hrefs = confirm_doc.xpath("//a[@id='download-link']/@href")
+    if not final_hrefs:
+        final_hrefs = [
+            h for h in confirm_doc.xpath("//a/@href") if h.lower().endswith(".apk") or "download.php" in h
+        ]
+    if not final_hrefs:
+        raise RuntimeError(f"No #download-link found on confirm page: {confirm_url}")
+    file_url = _absolute(final_hrefs[0], confirm_url)
+    if not file_url:
+        raise RuntimeError("Could not resolve final download URL")
+    return file_url
 
 
 async def download_apk(version: str, app_name: str = "youtube", force_build: str | None = None) -> str:
@@ -512,75 +355,44 @@ async def download_apk(version: str, app_name: str = "youtube", force_build: str
     out_dir = Path(__file__).resolve().parent.parent.parent / "downloads"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    page = await get_page()
+    list_url, is_final = await _resolve_list_url(app_config, version)
+    log.info(f"LIST: {list_url}")
 
-    try:
-        list_url, is_final = await _resolve_list_url(page, app_config, version)
-        log.info(f"LIST: {list_url}")
+    if is_final:
+        variant_solution = await _get(list_url, label="variant-page")
+        variant_url = list_url
+        log.info(f"VARIANT: {variant_url} (single-variant release)")
+    else:
+        variant_solution = None
+        variant_url = None
+        for attempt in range(4):
+            solution = await _get(list_url, label="list-page")
+            variant_url = _extract_variant_url(solution, force_build, app_name, list_url)
+            if variant_url:
+                variant_solution = solution
+                break
+            log.notice(f"No matching row found on page, retrying ({attempt + 1}/4)...")
+        if not variant_url or variant_solution is None:
+            last_solution = await _get(list_url, label="list-page-debug")
+            _dump_variant_rows_for_debug(last_solution)
+            _save_diagnostic_html(last_solution, f"no-variant-{app_name}")
+            raise RuntimeError("No matching variant found on APKMirror")
+        log.info(f"VARIANT: {variant_url}")
+        variant_solution = await _get(variant_url, label="variant-page")
 
-        if is_final:
-            variant_url = list_url
-            log.info(f"VARIANT: {variant_url} (single-variant release, page already loaded)")
-        else:
-            variant_url = None
-            for attempt in range(4):
-                await _goto(page, list_url, wait=1.5 + attempt * 1.0, label="list-page")
-                variant_url = await _extract_variant_url(page, force_build, app_name)
-                if variant_url:
-                    break
-                log.notice(f"No matching row found on page, retrying ({attempt + 1}/4)...")
+    assert variant_solution is not None
+    file_url = await _resolve_file_url(variant_url, variant_solution)
+    log.download(f"Downloading: {file_url}")
 
-            if not variant_url:
-                await _dump_variant_rows_for_debug(page)
-                await _save_diagnostic_screenshot(page, f"no-variant-{app_name}")
-                raise RuntimeError("No matching variant found on APKMirror")
-            if variant_url.startswith("/"):
-                variant_url = "https://www.apkmirror.com" + variant_url
+    file_name = Path(file_url.split("?")[0]).name or f"{app_name}-{version}.apk"
+    if not file_name.lower().endswith((".apk", ".apkm", ".xapk")):
+        file_name = f"{app_name}-{version}.apk"
+    final_path = out_dir / file_name
 
-            log.info(f"VARIANT: {variant_url}")
-            await _goto(page, variant_url, wait=1.2, label="variant-page")
-
-        log.browser("Clicking main download button...")
-        assert variant_url is not None
-        download = None
-        try:
-            async for retry_attempt in AsyncRetrying(
-                stop=stop_after_attempt(4),
-                wait=_ChallengeCooldownWait(),
-                retry=retry_if_exception_type(_ChallengePresent),
-                before_sleep=lambda rs: log.notice(
-                    f"Download click had no effect, cooling down "
-                    f"{(rs.next_action.sleep if rs.next_action else 0):.0f}s before retrying "
-                    f"(attempt #{_challenge_hits} this run)..."
-                ),
-                reraise=True,
-            ):
-                with retry_attempt:
-                    if retry_attempt.retry_state.attempt_number > 1:
-                        await _goto(page, variant_url, wait=1.2, label="variant-page-retry")
-                        log.browser("Clicking main download button...")
-                    download, page = await _attempt_download(page)
-        except _ChallengePresent:
-            pass
-
-        if download is None:
-            log.error(f"Download did not start. Current page: {(await page.title())!r} @ {page.url}")
-            await _save_diagnostic_screenshot(page, f"no-download-{app_name}")
-            raise RuntimeError("Download did not start / file not detected.")
-
-        final_path = out_dir / download.suggested_filename
-        await download.save_as(final_path)
-
-        size = final_path.stat().st_size
-        if size < 1024:
-            raise RuntimeError(f"Downloaded file too small ({size} bytes)")
-
-        log.success(f"DONE: {final_path} ({size / 1024 / 1024:.2f} MB)")
-        return str(final_path)
-
-    except Exception:
-        await _save_diagnostic_screenshot(page, f"error-{app_name}")
-        raise
+    await _download_file(file_url, final_path, variant_solution)
+    size = final_path.stat().st_size
+    log.success(f"DONE: {final_path} ({size / 1024 / 1024:.2f} MB)")
+    return str(final_path)
 
 
 def _version_from_href(href: str | None) -> str | None:
@@ -589,7 +401,6 @@ def _version_from_href(href: str | None) -> str | None:
     match = re.search(r"-(\d[\d]*(?:-\d+)+)-release", href)
     if not match:
         return None
-
     return match.group(1).replace("-", ".")
 
 
@@ -598,55 +409,40 @@ async def get_latest_listing(app_name: str) -> dict | None:
     if not app_config:
         raise RuntimeError(f'Unknown appName "{app_name}" - not found in APP_SITES')
 
-    page = await get_page()
+    listing_url = f"{BASE_URL}/apk/{app_config['org']}/{app_config['slug']}/"
+    log.info(f"LISTING: {listing_url}")
 
-    try:
-        listing_url = f"https://www.apkmirror.com/apk/{app_config['org']}/{app_config['slug']}/"
-        log.info(f"LISTING: {listing_url}")
+    candidates: list[dict[str, Any]] = []
+    for attempt in range(4):
+        solution = await _get(listing_url, label="app-listing")
+        doc = _html_document(solution)
+        for link in doc.xpath("//a[contains(@href,'-release/')]")[:15]:
+            href = _absolute(link.get("href"), listing_url)
+            row = link.xpath("ancestor::div[1] | ancestor::li[1] | ancestor::tr[1]")
+            text = _text(row[0]) if row else _text(link)
+            candidates.append({"href": href, "text": text})
+        if candidates:
+            break
+        log.notice(f"No link found on listing page, retrying ({attempt + 1}/4)...")
 
-        js = """
-        (() => {
-            const links = Array.from(document.querySelectorAll("a[href*='-release/']")).slice(0, 15);
-            return JSON.stringify(links.map(link => {
-                const row = link.closest('div, li, tr') || link.parentElement;
-                const text = row ? row.innerText : link.innerText;
-                return { href: link.href, text: text || '' };
-            }));
-        })()
-        """
-
-        candidates: list[Any] = []
-        for attempt in range(4):
-            await _goto(page, listing_url, wait=2.5 + attempt * 1.2, label="app-listing")
-            raw = await page.evaluate(js)
-            try:
-                candidates = json.loads(raw) if isinstance(raw, str) else (raw or [])
-            except Exception as e:
-                log.warn(f"Could not parse listing data as JSON: {e}")
-                candidates = []
-            if candidates:
-                break
-            log.notice(f"No link found on listing page, retrying ({attempt + 1}/4)...")
-
-        if not candidates:
-            await _save_diagnostic_screenshot(page, f"no-listing-{app_name}")
-            return None
-
-        for item in candidates:
-            href = item.get("href") if isinstance(item, dict) else None
-            text = item.get("text", "") if isinstance(item, dict) else ""
-
-            version = _version_from_href(href)
-            if not version:
-                match = re.search(r"\d+(?:\.\d+)+", text)
-                version = match.group(0) if match else None
-
-            if version:
-                return {"version": version, "href": href}
-
-        await _save_diagnostic_screenshot(page, f"no-version-{app_name}")
+    if not candidates:
         return None
 
-    except Exception:
-        await _save_diagnostic_screenshot(page, f"error-listing-{app_name}")
-        raise
+    for item in candidates:
+        href = item.get("href")
+        text = item.get("text", "")
+        version = _version_from_href(href)
+        if not version:
+            match = re.search(r"\d+(?:\.\d+)+", text)
+            version = match.group(0) if match else None
+        if version:
+            return {"version": version, "href": href}
+    return None
+
+
+async def close_browser() -> None:
+    """Backward-compatible no-op kept for main.py.
+
+    FlareSolverr sessions are server-side; there is no local browser to close.
+    """
+    return None

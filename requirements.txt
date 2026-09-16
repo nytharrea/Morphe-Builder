@@ -1,6 +1,5 @@
-camoufox
-playwright==1.61.0
 curl_cffi
+lxml
 tenacity
 loguru
 androguard

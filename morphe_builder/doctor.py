@@ -22,6 +22,7 @@ def check_environment() -> list[tuple[str, bool, str]]:
     add("key_password", bool(settings.key_password and settings.key_password.get_secret_value()), "")
     add("known_signatures_path", settings.known_signatures_path.exists(), str(settings.known_signatures_path))
     add("artifacts_dir", Path(settings.artifacts_dir).exists(), str(settings.artifacts_dir))
+    add("flaresolverr_url", bool(settings.flaresolverr_url), settings.flaresolverr_url)
     return checks
 
 

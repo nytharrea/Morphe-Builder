@@ -62,5 +62,12 @@ class Settings(BaseSettings):
     release_keep_latest: int = 3
     pinned_assets_path: Path = Field(default_factory=lambda: Path.cwd() / "data" / "pinned_assets.json")
 
+    # FlareSolverr owns APKMirror's Cloudflare/browser session. The pipeline
+    # only consumes rendered HTML/cookies from it and downloads APKs over HTTP.
+    flaresolverr_url: str = "http://127.0.0.1:8191"
+    flaresolverr_max_timeout_ms: int = 60_000
+    flaresolverr_session: str = "morphe-apkmirror"
+    flaresolverr_retries: int = 3
+
 
 settings = Settings()

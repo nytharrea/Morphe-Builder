@@ -5,9 +5,9 @@ kaynak imzasını doğrular, Morphe Desktop ile patch'ler, kendi keystore'unla
 imzalar ve tek GitHub release altında yayınlar.
 
 Bu paket; mevcut `core/` yapısını bozmadan eklenen `morphe_builder/`
-yardımcı modülleri, manifest/retention/asset-pin desteği ve daha güvenli
-workflow davranışları içerir. **İmza anahtarın ve MicroG sürüm seçim
-mantığı değiştirilmedi.**
+yardımcı modülleri, manifest/retention/asset-pin desteği, APKMirror için
+FlareSolverr altyapısı ve daha güvenli workflow davranışları içerir.
+**İmza anahtarın ve MicroG sürüm seçim mantığı değiştirilmedi.**
 
 ## Neler eklendi/düzeltildi
 
@@ -19,6 +19,9 @@ mantığı değiştirilmedi.**
 - `python -m morphe_builder.doctor`: temel ortam/secret kontrolü.
 - Atomic JSON yazımı, retention seçimi, version policy, rate-limit helper modülleri.
 - Notification secret'ları için `.env.example` ve dokümantasyon.
+- APKMirror scraping artık Camoufox/Playwright yerine FlareSolverr servisi üzerinden
+  çalışır; workflow `patch` job'unda `ghcr.io/flaresolverr/flaresolverr:latest`
+  service olarak ayağa kalkar.
 
 ## Hızlı kullanım
 
@@ -36,6 +39,10 @@ ARTIFACTS_DIR=dist RELEASE_TAG=test RELEASE_NAME=test python finalize_release.py
 - `VERSION_POLICY`: `max_patches_then_version` varsayılan; `latest_compatible` seçeneği eklendi.
 - `RELEASE_KEEP_LATEST`: finalize'de tutulacak release sayısı.
 - `PINNED_ASSETS_PATH`: asset SHA-256 pin dosyası.
+- `FLARESOLVERR_URL`: FlareSolverr servis adresi, varsayılan `http://127.0.0.1:8191`.
+- `FLARESOLVERR_MAX_TIMEOUT_MS`: challenge çözme üst sınırı.
+- `FLARESOLVERR_SESSION`: APKMirror oturum adı.
+- `FLARESOLVERR_RETRIES`: challenge tekrar sayısı.
 
 ## Asset pin örneği
 
