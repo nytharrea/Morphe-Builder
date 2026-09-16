@@ -4,6 +4,7 @@ import asyncio
 import random
 import re
 import time
+import zipfile
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin
@@ -293,6 +294,52 @@ def _save_diagnostic_html(solution: dict[str, Any], name: str) -> None:
         log.warn(f"Could not save diagnostic HTML: {e}")
 
 
+def _filename_from_content_disposition(value: str | None, fallback: str) -> str:
+    if not value:
+        return fallback
+    match = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)', value, flags=re.IGNORECASE)
+    if not match:
+        return fallback
+    name = match.group(1).strip().strip('"')
+    return name or fallback
+
+
+def _looks_like_apk_container(path: Path) -> bool:
+    try:
+        with open(path, "rb") as f:
+            return f.read(2) == b"PK"
+    except OSError:
+        return False
+
+
+def _extract_base_apk_if_needed(path: Path) -> Path:
+    """APKMirror sometimes serves an .apkm/.xapk bundle from download.php.
+
+    Morphe Desktop expects a real APK with AndroidManifest.xml at the ZIP root.
+    If the downloaded container is a bundle, extract base.apk and return that.
+    """
+    if not zipfile.is_zipfile(path):
+        if _looks_like_apk_container(path):
+            return path
+        raise RuntimeError(f"Downloaded file is not an APK/ZIP container: {path}")
+
+    with zipfile.ZipFile(path) as zf:
+        names = zf.namelist()
+        if "AndroidManifest.xml" in names:
+            return path
+        candidates = [n for n in names if n.split("/")[-1] == "base.apk"]
+        if not candidates:
+            candidates = [n for n in names if n.endswith(".apk")]
+        if not candidates:
+            raise RuntimeError(f"Downloaded bundle has no base.apk/AndroidManifest.xml: {path.name}")
+        extracted = zf.read(candidates[0])
+
+    base_path = path.with_name(f"{path.stem}-base.apk")
+    base_path.write_bytes(extracted)
+    log.info(f"Extracted base APK from bundle: {base_path.name}")
+    return base_path
+
+
 def _download_headers(solution: dict[str, Any]) -> dict[str, str]:
     headers = {"User-Agent": solution.get("userAgent") or "Mozilla/5.0"}
     cookies = solution.get("cookies") or []
@@ -301,23 +348,33 @@ def _download_headers(solution: dict[str, Any]) -> dict[str, str]:
     return headers
 
 
-async def _download_file(url: str, out_path: Path, solution: dict[str, Any]) -> None:
+async def _download_file(url: str, out_path: Path, solution: dict[str, Any]) -> Path:
     temp_path = out_path.with_name(out_path.name + ".part")
     headers = _download_headers(solution)
+    file_name = out_path.name
     async with (
         AsyncSession(timeout=None, allow_redirects=True, impersonate="firefox", headers=headers) as client,
         client.stream("GET", url) as res,
     ):
         if res.status_code >= 400:
             raise RuntimeError(f"APKMirror download HTTP {res.status_code}")
+        file_name = _filename_from_content_disposition(res.headers.get("content-disposition"), file_name)
+        final_path = out_path.with_name(file_name)
         with open(temp_path, "wb") as f:
             async for chunk in res.aiter_content():
                 f.write(chunk)
+
     size = temp_path.stat().st_size
     if size < 1024:
         temp_path.unlink(missing_ok=True)
         raise RuntimeError(f"Downloaded file too small ({size} bytes)")
-    temp_path.replace(out_path)
+
+    final_path = out_path.with_name(file_name)
+    temp_path.replace(final_path)
+    patched_input = _extract_base_apk_if_needed(final_path)
+    if patched_input != final_path:
+        log.info(f"Downloaded bundle container kept at {final_path.name}; using extracted APK for patching")
+    return patched_input
 
 
 async def _resolve_file_url(variant_url: str, solution: dict[str, Any]) -> str:
@@ -389,10 +446,10 @@ async def download_apk(version: str, app_name: str = "youtube", force_build: str
         file_name = f"{app_name}-{version}.apk"
     final_path = out_dir / file_name
 
-    await _download_file(file_url, final_path, variant_solution)
-    size = final_path.stat().st_size
-    log.success(f"DONE: {final_path} ({size / 1024 / 1024:.2f} MB)")
-    return str(final_path)
+    downloaded_path = await _download_file(file_url, final_path, variant_solution)
+    size = downloaded_path.stat().st_size
+    log.success(f"DONE: {downloaded_path} ({size / 1024 / 1024:.2f} MB)")
+    return str(downloaded_path)
 
 
 def _version_from_href(href: str | None) -> str | None:
