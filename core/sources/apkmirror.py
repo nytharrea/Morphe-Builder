@@ -269,6 +269,17 @@ def _soup(html: str) -> BeautifulSoup:
     return BeautifulSoup(html, "lxml")
 
 
+def _attr_str(value: Any) -> str | None:
+    """Normalize BeautifulSoup attribute values to a plain str (or None)."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return value[0] if value and isinstance(value[0], str) else None
+    return str(value)
+
+
 def _row_count(html: str) -> int:
     soup = _soup(html)
     return len(soup.select(".variants-table .table-row"))
@@ -350,7 +361,7 @@ async def _resolve_list_url(app_config: dict, version: str) -> tuple[str, bool, 
         html, _ = await _fetch_page(listing_url, wait=1.5 + attempt, label="listing-scan", deadline=deadline)
         soup = _soup(html)
         for a in soup.select("a[href*='-release/']"):
-            href = a.get("href") or ""
+            href = _attr_str(a.get("href")) or ""
             if slug_part in href and "#" not in href:
                 found = urljoin("https://www.apkmirror.com", href)
                 return found, False, None
@@ -396,7 +407,7 @@ def _extract_variant_url(html: str, force_build: str | None, app_name: str) -> s
         link = cells[0].select_one("a.accent_color")
         if not link:
             continue
-        href = link.get("href")
+        href = _attr_str(link.get("href"))
         if not href:
             continue
 
@@ -539,14 +550,14 @@ def _find_download_href(html: str, base_url: str) -> str | None:
     # Confirm interstitial final link
     final = soup.select_one("#download-link")
     if final:
-        href = _ok(final.get("href"))
+        href = _ok(_attr_str(final.get("href")))
         if href:
             return _force_base_apk(href)
 
     buttons = soup.select("a.downloadButton")
     scored: list[tuple[int, str]] = []
     for btn in buttons:
-        href = _ok(btn.get("href"))
+        href = _ok(_attr_str(btn.get("href")))
         if not href:
             continue
         text = (btn.get_text(" ", strip=True) or "").lower()
@@ -741,7 +752,7 @@ async def get_latest_listing(app_name: str) -> dict | None:
             soup = _soup(html)
             candidates = []
             for link in soup.select("a[href*='-release/']")[:15]:
-                href = link.get("href")
+                href = _attr_str(link.get("href"))
                 if href:
                     href = urljoin("https://www.apkmirror.com", href)
                 row = link.find_parent(["div", "li", "tr"]) or link.parent
