@@ -417,6 +417,7 @@ async def download_apk(version: str, app_name: str = "youtube", force_build: str
     list_url, is_final = await _resolve_list_url(app_config, version)
     log.info(f"LIST: {list_url}")
 
+    variant_url: str | None
     if is_final:
         variant_solution = await _get(list_url, label="variant-page")
         variant_url = list_url
