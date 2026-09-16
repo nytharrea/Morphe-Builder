@@ -7,7 +7,7 @@ import time
 import zipfile
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 from curl_cffi.requests import AsyncSession
 from lxml import html as lxml_html
@@ -350,7 +350,27 @@ def _download_headers(solution: dict[str, Any]) -> dict[str, str]:
     return headers
 
 
-async def _download_file(url: str, out_path: Path, solution: dict[str, Any]) -> Path:
+def _with_force_base_apk(url: str) -> str:
+    """Ask APKMirror's download.php for the monolithic/base APK when possible."""
+    if "download.php" not in url:
+        return url
+    parts = urlsplit(url)
+    query = parse_qsl(parts.query, keep_blank_values=True)
+    if any(key.lower() == "forcebaseapk" for key, _ in query):
+        return url
+    query.append(("forcebaseapk", "true"))
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+
+
+def _without_force_base_apk(url: str) -> str:
+    if "download.php" not in url or "forcebaseapk" not in url.lower():
+        return url
+    parts = urlsplit(url)
+    query = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if k.lower() != "forcebaseapk"]
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+
+
+async def _download_once(url: str, out_path: Path, solution: dict[str, Any]) -> Path:
     temp_path = out_path.with_name(out_path.name + ".part")
     headers = _download_headers(solution)
     file_name = out_path.name
@@ -379,6 +399,23 @@ async def _download_file(url: str, out_path: Path, solution: dict[str, Any]) -> 
     return patched_input
 
 
+async def _download_file(url: str, out_path: Path, solution: dict[str, Any]) -> Path:
+    candidates = [url]
+    fallback_url = _without_force_base_apk(url)
+    if fallback_url != url:
+        candidates.append(fallback_url)
+
+    last_error: Exception | None = None
+    for candidate in candidates:
+        try:
+            return await _download_once(candidate, out_path, solution)
+        except Exception as e:
+            last_error = e
+            log.warn(f"Download attempt failed for {candidate}: {e}")
+    assert last_error is not None
+    raise last_error
+
+
 async def _resolve_file_url(variant_url: str, solution: dict[str, Any]) -> str:
     doc = _html_document(solution)
     hrefs = doc.xpath("//a[contains(@class,'downloadButton')]/@href")
@@ -389,7 +426,7 @@ async def _resolve_file_url(variant_url: str, solution: dict[str, Any]) -> str:
         raise RuntimeError("Could not resolve download button URL")
 
     if confirm_url.lower().endswith(".apk") or "download.php" in confirm_url:
-        return confirm_url
+        return _with_force_base_apk(confirm_url)
 
     confirm_solution = await _get(confirm_url, label="download-confirm")
     confirm_doc = _html_document(confirm_solution)
@@ -403,7 +440,7 @@ async def _resolve_file_url(variant_url: str, solution: dict[str, Any]) -> str:
     file_url = _absolute(final_hrefs[0], confirm_url)
     if not file_url:
         raise RuntimeError("Could not resolve final download URL")
-    return file_url
+    return _with_force_base_apk(file_url)
 
 
 async def download_apk(version: str, app_name: str = "youtube", force_build: str | None = None) -> str:
