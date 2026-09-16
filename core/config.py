@@ -53,6 +53,8 @@ APKMIRROR_APPS: list[str] = [
     "google-photos",
     "proton-pass",
     "notesnook",
+    "instagram",
+    "speedtest",
 ]
 
 APPS_CONFIG: dict[str, AppConfig] = {
@@ -114,6 +116,7 @@ APPS_CONFIG: dict[str, AppConfig] = {
         "patch_source": "piko",
         "arch": "arm64-v8a",
         "icon": "https://cdn.simpleicons.org/instagram/E4405F",
+        "force_build": "384510827",
     },
     "gboard": {
         "pkg": "com.google.android.inputmethod.latin",
@@ -134,7 +137,8 @@ APPS_CONFIG: dict[str, AppConfig] = {
         "arch": "arm64-v8a",
         "icon": "https://www.google.com/s2/favicons?sz=128&domain=speedtest.net",
         "exclude": [],
-        "force_version": "7.0.7",
+        "force_version": "7.1.0",
+        "force_build": "263066",
         "enable": ["Disable Play Store updates"],
     },
     "brave": {
