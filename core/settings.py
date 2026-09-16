@@ -55,22 +55,9 @@ class Settings(BaseSettings):
     release_name: str | None = None
     artifacts_dir: Path = Path("artifacts")
 
-    # Safety/behaviour switches. Defaults preserve the previous behaviour;
-    # the workflow opts into stricter release behaviour explicitly.
-    require_custom_keystore: bool = False
-    version_policy: str = "max_patches_then_version"
-    # Morphe Desktop marks some versions as experimental. The builder prefers
-    # trying newer releases first; set this to false for stable-only lists.
-    include_experimental_versions: bool = True
-    release_keep_latest: int = 3
-    pinned_assets_path: Path = Field(default_factory=lambda: Path.cwd() / "data" / "pinned_assets.json")
-
-    # FlareSolverr owns APKMirror's Cloudflare/browser session. The pipeline
-    # only consumes rendered HTML/cookies from it and downloads APKs over HTTP.
+    # FlareSolverr proxy used by core/sources/apkmirror.py to bypass Cloudflare.
+    # Default matches the Docker service started in .github/workflows/patch.yml.
     flaresolverr_url: str = "http://127.0.0.1:8191"
-    flaresolverr_max_timeout_ms: int = 60_000
-    flaresolverr_session: str = "morphe-apkmirror"
-    flaresolverr_retries: int = 3
 
 
 settings = Settings()

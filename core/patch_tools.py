@@ -3,9 +3,6 @@ from pathlib import Path
 
 from tenacity import retry, stop_after_attempt
 
-from morphe_builder.hashes import sha256_file
-from morphe_builder.pinned_assets import verify_asset_pin
-
 from . import log
 from . import retry as retry_conf
 from .http import new_session
@@ -62,7 +59,7 @@ async def _download_file(url: str, output_path: Path, expected_size: int | None 
     mode = "ab" if downloaded > 0 else "wb"
 
     async with (
-        new_session(allow_redirects=True, timeout=None) as client,
+        new_session(follow_redirects=True, timeout=None) as client,
         client.stream("GET", url, headers=headers) as res,
     ):
         if res.status_code >= 400:
@@ -107,14 +104,11 @@ async def download_latest_github_asset(
             out_path.unlink()
         else:
             log.info(f"Using cached file: {asset['name']}")
-            digest = sha256_file(out_path)
-            verify_asset_pin(owner, repo, asset["name"], digest, settings.pinned_assets_path)
             return {
                 "name": asset["name"],
                 "body": release.get("body") or "",
                 "tag": release.get("tag_name") or "",
                 "prerelease": bool(release.get("prerelease")),
-                "sha256": digest,
             }
 
     @retry(
@@ -128,9 +122,6 @@ async def download_latest_github_asset(
 
     await _do()
 
-    digest = sha256_file(out_path)
-    verify_asset_pin(owner, repo, asset["name"], digest, settings.pinned_assets_path)
-
     log.success(f"Done: {asset['name']}")
 
     return {
@@ -138,5 +129,4 @@ async def download_latest_github_asset(
         "body": release.get("body") or "",
         "tag": release.get("tag_name") or "",
         "prerelease": bool(release.get("prerelease")),
-        "sha256": digest,
     }

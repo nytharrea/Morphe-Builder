@@ -1,8 +1,6 @@
 from collections.abc import Callable
 from pathlib import Path
 
-from morphe_builder.retention import select_releases_to_delete
-
 from . import log
 from .http import new_session
 from .patch_tools import download_latest_github_asset
@@ -47,36 +45,6 @@ async def create_new_release(tag: str, release_name: str, release_body: str = ""
     return data
 
 
-async def get_release_by_tag(tag: str) -> dict | None:
-    _assert_configured()
-    async with new_session(timeout=30) as client:
-        res = await client.get(
-            f"https://api.github.com/repos/{settings.github_repository}/releases/tags/{tag}",
-            headers=HEADERS,
-        )
-        if res.status_code == 404:
-            return None
-        data = res.json()
-    if not isinstance(data, dict) or "id" not in data:
-        return None
-    return data
-
-
-async def update_release(release_id: int, release_name: str, release_body: str) -> dict:
-    _assert_configured()
-    log.step(f"Updating release {release_id}")
-    async with new_session(timeout=30) as client:
-        res = await client.patch(
-            f"https://api.github.com/repos/{settings.github_repository}/releases/{release_id}",
-            headers=HEADERS,
-            json={"name": release_name, "body": release_body},
-        )
-        data = res.json()
-    if not isinstance(data, dict) or "id" not in data:
-        raise RuntimeError(f"Failed to update release: {data}")
-    return data
-
-
 async def list_releases() -> list[dict]:
     async with new_session(timeout=30) as client:
         res = await client.get(
@@ -108,11 +76,12 @@ async def delete_tag(tag: str) -> None:
         )
 
 
-async def delete_other_releases(keep_release_id: int, keep_latest: int = 1) -> None:
+async def delete_other_releases(keep_release_id: int) -> None:
     releases = await list_releases()
-    to_delete = select_releases_to_delete(releases, keep_release_id, keep_latest=keep_latest)
 
-    for release in to_delete:
+    for release in releases:
+        if release["id"] == keep_release_id:
+            continue
         log.warn(f"Deleting old release: {release.get('tag_name')}")
         await delete_release(release["id"])
         await delete_tag(release["tag_name"])

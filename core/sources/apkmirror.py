@@ -1,22 +1,20 @@
-from __future__ import annotations
-
 import asyncio
 import random
 import re
 import time
-import zipfile
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
+from urllib.parse import urljoin
 
-from curl_cffi.requests import AsyncSession
-from lxml import html as lxml_html
-from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt
+from bs4 import BeautifulSoup
+from tenacity import AsyncRetrying, retry, retry_if_exception_type, stop_after_attempt
 from tenacity.stop import stop_base
+from tenacity.wait import wait_base
 
-from .. import flaresolverr, log
+from .. import log
 from .. import retry as retry_conf
 from ..apk.versions import to_apkmirror_version
+from ..http import new_session
 from ..settings import settings
 
 APP_SITES = {
@@ -24,7 +22,7 @@ APP_SITES = {
     "youtube-music": {"org": "google-inc", "slug": "youtube-music"},
     "reddit": {"org": "reddit-inc", "slug": "reddit"},
     "twitter": {"org": "x-corp", "slug": "twitter", "release_slug": "x"},
-    "instagram": {"org": "instagram", "slug": "instagram-instagram", "release_slug": "instagram"},
+    "instagram": {"org": "instagram", "slug": "instagram"},
     "gboard": {"org": "google-inc", "slug": "gboard", "release_slug": "gboard-the-google-keyboard"},
     "speedtest": {"org": "ookla", "slug": "speedtest"},
     "brave": {"org": "brave-software", "slug": "brave-browser", "release_slug": "brave-private-web-browser-vpn"},
@@ -51,12 +49,33 @@ APP_SITES = {
         "slug": "notesnook-private-notes-app",
         "release_slug": "notesnook-secure-private-notes",
     },
+    "termius": {
+        "org": "termius-corporation",
+        "slug": "termius-ssh-telnet-client",
+        "release_slug": "termius-modern-ssh-client",
+    },
 }
 
 DIAGNOSTICS_DIR = Path(__file__).resolve().parent.parent.parent / "diagnostics"
-RESOLVE_BUDGET_SECONDS = 300.0
-BASE_URL = "https://www.apkmirror.com"
 
+RESOLVE_BUDGET_SECONDS = 300.0
+
+_CHALLENGE_MARKERS = [
+    "just a moment",
+    "checking your browser",
+    "attention required! | cloudflare",
+    "verify you are human",
+    "cf-browser-verification",
+    "cf_chl_",
+    "ddos protection by cloudflare",
+    "performing security verification",
+    "verifies you are not a bot",
+]
+
+# FlareSolverr session state (shared for the whole run so clearance cookies stick)
+_fs_session_id: str | None = None
+_fs_cookies: dict[str, str] = {}
+_fs_user_agent: str | None = None
 _challenge_hits = 0
 _cooldown_until = 0.0
 
@@ -65,19 +84,103 @@ async def _jitter_sleep(base: float, spread: float = 0.6) -> None:
     await asyncio.sleep(base + random.uniform(0, spread))
 
 
-async def _apply_global_cooldown() -> None:
-    remaining = _cooldown_until - time.monotonic()
-    if remaining > 0:
-        log.wait(f"Global APKMirror cooldown active, sleeping {remaining:.0f}s...")
+def _flaresolverr_url() -> str:
+    return settings.flaresolverr_url.rstrip("/")
+
+
+async def _fs_request(cmd: str, **payload: Any) -> dict[str, Any]:
+    """POST a command to the FlareSolverr /v1 endpoint and return the JSON body."""
+    body = {"cmd": cmd, **payload}
+    async with new_session(timeout=120) as session:
+        resp = await session.post(
+            f"{_flaresolverr_url()}/v1",
+            json=body,
+            headers={"Content-Type": "application/json"},
+        )
+        data = resp.json()
+        if data.get("status") != "ok":
+            raise RuntimeError(f"FlareSolverr error: {data.get('message', data)}")
+        return data
+
+
+@retry(
+    stop=stop_after_attempt(6),
+    wait=retry_conf.incrementing(start=1.5, increment=1.5, max=8.0),
+    before_sleep=retry_conf.before_sleep("Could not create FlareSolverr session"),
+    reraise=True,
+)
+async def _ensure_session() -> str:
+    global _fs_session_id
+    if _fs_session_id is not None:
+        return _fs_session_id
+    log.info("Creating FlareSolverr session...")
+    data = await _fs_request("sessions.create")
+    session_id = data.get("session")
+    if not session_id:
+        raise RuntimeError(f"FlareSolverr sessions.create returned no session id: {data}")
+    _fs_session_id = session_id
+    log.info(f"FlareSolverr session ready: {session_id}")
+    return session_id
+
+
+async def close_browser():
+    """Destroy the FlareSolverr session if one was created (name kept for main.py compat)."""
+    global _fs_session_id, _fs_cookies, _fs_user_agent
+    if _fs_session_id is not None:
+        try:
+            await _fs_request("sessions.destroy", session=_fs_session_id)
+            log.info(f"FlareSolverr session destroyed: {_fs_session_id}")
+        except Exception as e:
+            log.warn(f"Could not destroy FlareSolverr session: {e}")
+        _fs_session_id = None
+        _fs_cookies = {}
+        _fs_user_agent = None
+
+
+def _is_challenge_html(html: str, title: str = "") -> bool:
+    content = (title + " " + html[:2000]).lower()
+    return any(marker in content for marker in _CHALLENGE_MARKERS)
+
+
+def _save_diagnostic_html(html: str, label: str) -> None:
+    try:
+        DIAGNOSTICS_DIR.mkdir(parents=True, exist_ok=True)
+        ts = int(time.time())
+        path = DIAGNOSTICS_DIR / f"{label}-{ts}.html"
+        path.write_text(html, encoding="utf-8", errors="replace")
+        log.info(f"Diagnostic HTML saved: {path}")
+    except Exception as e:
+        log.warn(f"Could not save diagnostic HTML: {e}")
+
+
+async def _apply_global_cooldown():
+    now = time.monotonic()
+    if now < _cooldown_until:
+        remaining = _cooldown_until - now
+        log.wait(f"Global cooldown active, waiting {remaining:.0f}s...")
         await asyncio.sleep(remaining)
+
+
+class _ChallengePresent(Exception):
+    """Raised when FlareSolverr returned a still-challenged page."""
+
+    def __init__(self, cooldown: float):
+        super().__init__("Cloudflare challenge page detected")
+        self.cooldown = cooldown
 
 
 def _register_challenge() -> float:
     global _challenge_hits, _cooldown_until
     _challenge_hits += 1
-    cooldown = min(60.0, 10.0 * _challenge_hits)
+    cooldown = min(15.0 * (2 ** (_challenge_hits - 1)), 120.0)
     _cooldown_until = time.monotonic() + cooldown
     return cooldown
+
+
+class _ChallengeCooldownWait(wait_base):
+    def __call__(self, retry_state) -> float:
+        exc = retry_state.outcome.exception() if retry_state.outcome else None
+        return exc.cooldown if isinstance(exc, _ChallengePresent) else 0.0
 
 
 class _BudgetExceeded(stop_base):
@@ -87,79 +190,119 @@ class _BudgetExceeded(stop_base):
     def __call__(self, retry_state) -> bool:
         if self.deadline is None or retry_state.outcome is None:
             return False
-        sleep = retry_state.next_action.sleep if retry_state.next_action else 0.0
-        return time.monotonic() + sleep >= self.deadline
+        exc = retry_state.outcome.exception()
+        cooldown = exc.cooldown if isinstance(exc, _ChallengePresent) else 0.0
+        return time.monotonic() + cooldown >= self.deadline
 
 
-async def _get(url: str, *, label: str, deadline: float | None = None) -> dict[str, Any]:
+async def _fetch_page(
+    url: str,
+    *,
+    wait: float = 1.2,
+    challenge_retries: int = 3,
+    label: str = "page",
+    deadline: float | None = None,
+) -> tuple[str, str]:
+    """Fetch a URL through FlareSolverr. Returns (html, final_url)."""
     await _apply_global_cooldown()
+    session_id = await _ensure_session()
+
+    html = ""
+    final_url = url
+
     try:
         async for attempt in AsyncRetrying(
-            stop=stop_after_attempt(settings.flaresolverr_retries) | _BudgetExceeded(deadline),
-            wait=retry_conf.incrementing(start=2.0, increment=2.0, max=15.0),
-            retry=retry_if_exception_type(flaresolverr.FlareSolverrChallengeError),
+            stop=stop_after_attempt(challenge_retries + 1) | _BudgetExceeded(deadline),
+            wait=_ChallengeCooldownWait(),
+            retry=retry_if_exception_type(_ChallengePresent),
             before_sleep=lambda rs: log.notice(
-                f"FlareSolverr challenge on {label}, cooling down "
-                f"{(rs.next_action.sleep if rs.next_action else 0):.0f}s before retry..."
+                f"Cloudflare challenge detected ({label}), cooling down "
+                f"{(rs.next_action.sleep if rs.next_action else 0):.0f}s before retrying "
+                f"(challenge #{_challenge_hits} this run)..."
             ),
             reraise=True,
         ):
             with attempt:
-                return await flaresolverr.request_get(url)
-    except flaresolverr.FlareSolverrChallengeError:
-        cooldown = _register_challenge()
-        log.warn(
-            f"Challenge still present ({label}); backing off {cooldown:.0f}s and continuing with returned HTML."
-        )
-        return await flaresolverr.request_get(url)
-    raise flaresolverr.FlareSolverrError(f"Could not fetch {label} from APKMirror")
+                log.browser(f"FlareSolverr GET [{label}]: {url}")
+                data = await _fs_request(
+                    "request.get",
+                    url=url,
+                    session=session_id,
+                    maxTimeout=60000,
+                )
+                solution = data.get("solution") or {}
+                html = solution.get("response") or ""
+                final_url = solution.get("url") or url
+                status = solution.get("status")
+
+                # Keep clearance cookies + UA for later binary downloads
+                global _fs_cookies, _fs_user_agent
+                for c in solution.get("cookies") or []:
+                    name = c.get("name")
+                    if name:
+                        _fs_cookies[name] = c.get("value", "")
+                ua = solution.get("userAgent")
+                if ua:
+                    _fs_user_agent = ua
+
+                title = ""
+                try:
+                    soup = BeautifulSoup(html, "lxml")
+                    if soup.title and soup.title.string:
+                        title = soup.title.string
+                except Exception:
+                    pass
+
+                if _is_challenge_html(html, title) or (status and int(status) in (403, 503)):
+                    raise _ChallengePresent(_register_challenge())
+
+                await _jitter_sleep(wait)
+    except _ChallengePresent:
+        log.notice(f"Cloudflare challenge still present ({label}), proceeding anyway...")
+        _save_diagnostic_html(html, f"cloudflare-{label}")
+
+    return html, final_url
 
 
-def _html_document(solution: dict[str, Any]):
-    response = solution.get("response") or ""
-    return lxml_html.fromstring(response)
+def _soup(html: str) -> BeautifulSoup:
+    return BeautifulSoup(html, "lxml")
 
 
-def _absolute(href: str | None, base: str) -> str | None:
-    if not href:
-        return None
-    return urljoin(base, href)
+def _row_count(html: str) -> int:
+    soup = _soup(html)
+    return len(soup.select(".variants-table .table-row"))
 
 
-def _is_404(solution: dict[str, Any], doc) -> bool:
-    if solution.get("status") == 404:
-        return True
-    title = " ".join(doc.xpath("//title//text()"))
-    body = " ".join(doc.xpath("//body//text()"))[:1000]
-    lowered = f"{title} {body}".lower()
-    return "404" in lowered and (
-        "whoops" in lowered or "not be found" in lowered or "could not be found" in lowered
+def _is_404_page(html: str) -> bool:
+    soup = _soup(html)
+    title = (soup.title.string or "") if soup.title else ""
+    body_text = soup.get_text(" ", strip=True)[:300]
+    content = (title + " " + body_text).lower()
+    return "404" in content and (
+        "whoops" in content or "could not be found" in content or "not be found" in content
     )
 
 
-def _row_count(doc) -> int:
-    return len(doc.xpath("//*[contains(@class,'variants-table')]//*[contains(@class,'table-row')]"))
-
-
-def _has_download_button(doc) -> bool:
-    return bool(doc.xpath("//a[contains(@class,'downloadButton')]"))
+def _has_download_button(html: str) -> bool:
+    soup = _soup(html)
+    return len(soup.select("a.downloadButton")) > 0
 
 
 async def _page_exists(url: str, deadline: float | None = None) -> bool:
     try:
-        solution = await _get(url, label="direct-try", deadline=deadline)
-        doc = _html_document(solution)
-        if _is_404(solution, doc):
+        html, _ = await _fetch_page(url, wait=1.0, label="direct-try", deadline=deadline)
+        if _is_404_page(html):
             return False
-        return _row_count(doc) > 0
+        return _row_count(html) > 0
     except Exception:
         return False
 
 
-async def _resolve_list_url(app_config: dict, version: str) -> tuple[str, bool]:
+async def _resolve_list_url(app_config: dict, version: str) -> tuple[str, bool, str | None]:
+    """Return (list_or_variant_url, is_final, html_if_already_loaded)."""
     version_slug = to_apkmirror_version(version)
     name_part = app_config.get("release_slug") or app_config["slug"]
-    folder_url = f"{BASE_URL}/apk/{app_config['org']}/{app_config['slug']}"
+    folder_url = f"https://www.apkmirror.com/apk/{app_config['org']}/{app_config['slug']}"
     deadline = time.monotonic() + RESOLVE_BUDGET_SECONDS
 
     release_slugs = [
@@ -172,337 +315,215 @@ async def _resolve_list_url(app_config: dict, version: str) -> tuple[str, bool]:
     for slug in release_slugs:
         if time.monotonic() > deadline:
             break
+
         candidate = f"{folder_url}/{slug}/"
         log.search(f"TRY: {candidate}")
         if await _page_exists(candidate, deadline=deadline):
-            return candidate, False
+            return candidate, False, None
 
         if time.monotonic() > deadline:
             break
+
         direct_variant = f"{candidate}{name_part}-{version_slug}-android-apk-download/"
         log.search(f"TRY (single-variant direct): {direct_variant}")
         try:
-            solution = await _get(direct_variant, label="direct-variant-try", deadline=deadline)
-            doc = _html_document(solution)
-            if not _is_404(solution, doc) and _has_download_button(doc):
-                return direct_variant, True
+            html, _ = await _fetch_page(direct_variant, wait=1.0, label="direct-variant-try", deadline=deadline)
+            if not _is_404_page(html) and _has_download_button(html):
+                return direct_variant, True, html
         except Exception:
             pass
 
     if time.monotonic() > deadline:
         raise RuntimeError(
-            f"Giving up on {app_config['slug']} v{version}: APKMirror/FlareSolverr resolve budget "
-            f"{RESOLVE_BUDGET_SECONDS:.0f}s exceeded."
+            f"Giving up on {app_config['slug']} v{version}: APKMirror kept challenge-walling every "
+            f"attempt (exceeded {RESOLVE_BUDGET_SECONDS:.0f}s resolve budget)"
         )
 
     log.search("No direct match, scanning app listing page...")
     listing_url = f"{folder_url}/"
     slug_part = f"-{version_slug}-"
-    for _attempt in range(2):
+
+    for attempt in range(2):
         if time.monotonic() > deadline:
             break
-        solution = await _get(listing_url, label="listing-scan", deadline=deadline)
-        doc = _html_document(solution)
-        for href in doc.xpath("//a[contains(@href,'-release/')]/@href"):
-            href = _absolute(href, listing_url)
-            if href and slug_part in href and "#" not in href:
-                return href, False
+        html, _ = await _fetch_page(listing_url, wait=1.5 + attempt, label="listing-scan", deadline=deadline)
+        soup = _soup(html)
+        for a in soup.select("a[href*='-release/']"):
+            href = a.get("href") or ""
+            if slug_part in href and "#" not in href:
+                found = urljoin("https://www.apkmirror.com", href)
+                return found, False, None
+
     raise RuntimeError(f"No APKMirror release page found for version {version}")
 
 
-def _text(node) -> str:
-    return " ".join(t.strip() for t in node.xpath(".//text()") if t.strip())
+def _dump_variant_rows_for_debug(html: str) -> None:
+    soup = _soup(html)
+    rows = soup.select(".table-row")
+    scoped = soup.select(".variants-table .table-row")
+    is404 = _is_404_page(html)
+    log.info(
+        f"Debug: page has {len(rows)} .table-row elements "
+        f"({len(scoped)} of them inside the real .variants-table), is404: {is404}"
+    )
+    for i, row in enumerate(rows[:20]):
+        cells = row.select(".table-cell")
+        name = cells[0].get_text(strip=True)[:60] if cells else None
+        arch = cells[1].get_text(strip=True) if len(cells) > 1 else None
+        dpi = cells[3].get_text(strip=True) if len(cells) > 3 else None
+        log.info(f"   [{i}] cells={len(cells)} name={name!r} arch={arch!r} dpi={dpi!r}")
 
 
-def _row_build_number(name_text: str) -> str | None:
-    match = re.search(r"\b(\d{6,})\b", name_text)
-    return match.group(1) if match else None
-
-
-def _variant_priority(is_bundle: bool, arch_text: str, dpi_text: str) -> int:
-    """APKMirror selection order matching the known-good fork.
-
-    Prefer the universal .apkm bundle because Morphe's --striplibs derives the
-    requested architecture from the complete split set. A narrow APK/base split
-    can miss resources and fail patching.
-    """
-    arch = arch_text.lower()
-    dpi = dpi_text.lower()
-    universal = "universal" in arch or "evrensel" in arch or "noarch" in arch
-    nodpi = not dpi or "nodpi" in dpi
-    anydpi = "anydpi" in dpi
-
-    if is_bundle and universal:
-        return 0
-    if is_bundle and "arm64-v8a" in arch:
-        return 1
-    if not is_bundle and universal:
-        return 2
-    if is_bundle and nodpi:
-        return 3
-    if not is_bundle and nodpi:
-        return 4
-    if is_bundle and anydpi:
-        return 5
-    if not is_bundle and anydpi:
-        return 6
-    return 7 if is_bundle else 8
-
-
-def _extract_variant_url(
-    solution: dict[str, Any], force_build: str | None, app_name: str, base_url: str
-) -> str | None:
-    doc = _html_document(solution)
-    rows = doc.xpath("//*[contains(@class,'variants-table')]//*[contains(@class,'table-row')]")
-    allowed_archs = (
+def _extract_variant_url(html: str, force_build: str | None, app_name: str) -> str | None:
+    soup = _soup(html)
+    rows = soup.select(".variants-table .table-row")
+    candidates: list[str | None] = [None, None, None, None, None, None]
+    allowed_archs = [
         "universal",
         "evrensel",
         "noarch",
         "arm64-v8a",
         "arm64-v8a + armeabi-v7a",
         "arm64-v8a + armeabi",
-    )
+    ]
 
-    def instagram_bundle_score(
-        name_text: str, arch_text: str, android_text: str, dpi_text: str, is_bundle: bool
-    ) -> int:
-        """Tie-breaker for architecture-specific bundles when no universal bundle exists."""
-        score = 0
-        if is_bundle:
-            score += 100
-        if "arm64-v8a" in arch_text:
-            score += 60
-        if "9.0+" in android_text:
-            score += 40
-        normalized_dpi = dpi_text.replace(" ", "")
-        if normalized_dpi == "480dpi":
-            score += 30
-        elif "480dpi" in normalized_dpi and "-" not in normalized_dpi:
-            score += 25
-        elif "nodpi" in normalized_dpi:
-            score += 10
-        elif "-" in normalized_dpi:
-            score += 5
-        split_match = re.search(r"\b(\d+)\s*[sS]\b", name_text)
-        if split_match:
-            score += max(0, 20 - int(split_match.group(1)))
-        return score
+    for row in rows:
+        cells = row.select(".table-cell")
+        if len(cells) < 4:
+            continue
 
-    def collect(use_force_build: bool) -> str | None:
-        best: tuple[int, int, str] | None = None
-        for row in rows:
-            cells = row.xpath(".//*[contains(@class,'table-cell')]")
-            if len(cells) < 4:
-                continue
-            hrefs = cells[0].xpath(".//a[contains(@class,'accent_color')]/@href")
-            if not hrefs:
-                continue
-            name_text = _text(cells[0])
-            row_build = _row_build_number(name_text)
-            if use_force_build and force_build and row_build != force_build:
-                continue
-            badge_text = " ".join(cells[0].xpath(".//*[contains(@class,'apkm-badge')]//text()")).upper()
-            is_bundle = "BUNDLE" in badge_text or "PAKET" in badge_text
-            if app_name == "instagram" and not is_bundle:
-                continue
-            arch_text = _text(cells[1]).lower()
-            android_text = _text(cells[2]).lower() if len(cells) > 2 else ""
-            dpi_text = _text(cells[3]).lower()
-            if arch_text and not any(a in arch_text for a in allowed_archs):
-                continue
+        link = cells[0].select_one("a.accent_color")
+        if not link:
+            continue
+        href = link.get("href")
+        if not href:
+            continue
 
-            candidate = _absolute(hrefs[0], base_url)
-            if not candidate:
-                continue
-            priority = _variant_priority(is_bundle, arch_text, dpi_text)
-            score = 0
-            if app_name == "instagram" and priority > 0:
-                score = instagram_bundle_score(name_text, arch_text, android_text, dpi_text, is_bundle)
-            current = (priority, score, candidate)
-            if best is None or current[:2] < best[:2]:
-                best = current
-        return best[2] if best else None
+        if force_build and force_build not in cells[0].get_text():
+            continue
 
-    result = collect(True)
-    if not result and force_build:
-        result = collect(False)
-    return result
+        badge = cells[0].select_one(".apkm-badge")
+        badge_text = (badge.get_text() if badge else "").upper()
+        is_bundle = "BUNDLE" in badge_text or "PAKET" in badge_text
+
+        if app_name == "instagram" and not is_bundle:
+            continue
+
+        arch_text = cells[1].get_text(strip=True).lower()
+        dpi_text = cells[3].get_text(strip=True).lower()
+
+        is_target_arch = arch_text == "" or any(a in arch_text for a in allowed_archs)
+        if not is_target_arch:
+            continue
+
+        is_nodpi = dpi_text == "" or "nodpi" in dpi_text
+        is_anydpi = "anydpi" in dpi_text
+
+        if is_nodpi:
+            slot = 3 if is_bundle else 0
+        elif is_anydpi:
+            slot = 4 if is_bundle else 1
+        else:
+            slot = 5 if is_bundle else 2
+
+        if not candidates[slot]:
+            candidates[slot] = urljoin("https://www.apkmirror.com", href)
+
+    return next((c for c in candidates if c), None)
 
 
-def _dump_variant_rows_for_debug(solution: dict[str, Any]) -> None:
-    try:
-        doc = _html_document(solution)
-        rows = doc.xpath("//*[contains(@class,'table-row')]")[:20]
-        log.info(f"Debug: page has {len(doc.xpath("//*[contains(@class, 'table-row')]"))} .table-row elements")
-        for i, row in enumerate(rows):
-            cells = row.xpath(".//*[contains(@class,'table-cell')]")
-            log.info(
-                f"   [{i}] cells={len(cells)} name={_text(cells[0])[:80]!r} "
-                f"build={_row_build_number(_text(cells[0]))!r} "
-                f"arch={_text(cells[1]) if len(cells) > 1 else ''!r} "
-                f"android={_text(cells[2]) if len(cells) > 2 else ''!r} "
-                f"dpi={_text(cells[3]) if len(cells) > 3 else ''!r}"
-            )
-    except Exception as e:
-        log.warn(f"Could not produce debug dump: {e}")
+async def _download_binary(url: str, out_path: Path) -> None:
+    """Download a binary file using the clearance cookies + UA from FlareSolverr."""
+    headers: dict[str, str] = {}
+    if _fs_user_agent:
+        headers["User-Agent"] = _fs_user_agent
+    headers["Referer"] = "https://www.apkmirror.com/"
+
+    async with new_session(timeout=300, follow_redirects=True) as session:
+        resp = await session.get(url, cookies=_fs_cookies, headers=headers)
+        resp.raise_for_status()
+        content = resp.content
+        if len(content) < 1024:
+            raise RuntimeError(f"Downloaded file too small ({len(content)} bytes)")
+        out_path.write_bytes(content)
 
 
-def _save_diagnostic_html(solution: dict[str, Any], name: str) -> None:
-    try:
-        DIAGNOSTICS_DIR.mkdir(parents=True, exist_ok=True)
-        path = DIAGNOSTICS_DIR / f"{int(time.time())}-{name}.html"
-        path.write_text(solution.get("response") or "", encoding="utf-8", errors="replace")
-        log.warn(f"Diagnostic HTML saved: {path}")
-    except Exception as e:
-        log.warn(f"Could not save diagnostic HTML: {e}")
+def _find_download_href(html: str, base_url: str) -> str | None:
+    """Extract the best download link from a variant or confirm page."""
+    soup = _soup(html)
+
+    # Prefer the final #download-link if present (confirm interstitial)
+    final = soup.select_one("#download-link")
+    if final and final.get("href"):
+        href = final["href"]
+        if not href.startswith(("javascript:", "#")):
+            return urljoin(base_url, href)
+
+    # Main download button
+    btn = soup.select_one("a.downloadButton")
+    if btn and btn.get("href"):
+        href = btn["href"]
+        if not href.startswith(("javascript:", "#")):
+            return urljoin(base_url, href)
+
+    return None
 
 
-def _filename_from_content_disposition(value: str | None, fallback: str) -> str:
-    if not value:
-        return fallback
-    match = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)', value, flags=re.IGNORECASE)
-    if not match:
-        return fallback
-    name = match.group(1).strip().strip('"')
-    return name or fallback
-
-
-def _looks_like_apk_container(path: Path) -> bool:
-    try:
-        with open(path, "rb") as f:
-            return f.read(2) == b"PK"
-    except OSError:
-        return False
-
-
-def _normalize_bundle_if_needed(path: Path) -> Path:
-    """Return a patchable APK/APKM path without dropping split resources.
-
-    Morphe Desktop can patch an APKMirror .apkm bundle directly when --striplibs
-    is used. Extracting only base.apk loses density/language/resource splits and
-    causes missing-resource/fingerprint failures, so keep the whole bundle.
+async def _attempt_download_from_html(html: str, page_url: str, out_dir: Path) -> Path | None:
     """
-    if not zipfile.is_zipfile(path):
-        if _looks_like_apk_container(path):
-            return path
-        raise RuntimeError(f"Downloaded file is not an APK/ZIP container: {path}")
+    From a variant/confirm page HTML, resolve the real download URL and fetch the file.
+    May need a second FlareSolverr round-trip if the first link is only a confirm page.
+    """
+    href = _find_download_href(html, page_url)
+    if not href:
+        return None
 
-    with zipfile.ZipFile(path) as zf:
-        names = zf.namelist()
-        if "AndroidManifest.xml" in names:
-            return path
-        candidates = [n for n in names if n.split("/")[-1] == "base.apk"]
-        if not candidates:
-            candidates = [n for n in names if n.endswith(".apk")]
-        if not candidates:
-            raise RuntimeError(f"Downloaded bundle has no base.apk/AndroidManifest.xml: {path.name}")
+    log.browser(f"Download candidate: {href}")
 
-    if path.suffix.lower() not in {".apkm", ".xapk"}:
-        bundle_path = path.with_suffix(".apkm")
-        if bundle_path.exists():
-            bundle_path.unlink()
-        path.rename(bundle_path)
-        log.info(f"Detected split bundle; renamed patch input to {bundle_path.name}")
-        return bundle_path
-    return path
+    # If the href still points at apkmirror.com (confirm page), fetch it first
+    if "apkmirror.com" in href and not href.rstrip("/").endswith((".apk", ".apkm", ".xapk")):
+        confirm_html, confirm_url = await _fetch_page(href, wait=1.5, label="confirm-page")
+        final_href = _find_download_href(confirm_html, confirm_url)
+        if not final_href:
+            # Sometimes the confirm page itself already has the direct CDN link in the same button
+            final_href = href
+        href = final_href
+        log.browser(f"Resolved download URL: {href}")
 
+    # Guess filename from URL
+    name = href.split("?")[0].rstrip("/").split("/")[-1] or "download.apk"
+    if not name.lower().endswith((".apk", ".apkm", ".xapk", ".zip")):
+        name = name + ".apk"
+    out_path = out_dir / name
 
-def _download_headers(solution: dict[str, Any]) -> dict[str, str]:
-    headers = {"User-Agent": solution.get("userAgent") or "Mozilla/5.0"}
-    cookies = solution.get("cookies") or []
-    if cookies:
-        headers["Cookie"] = "; ".join(f"{c.get('name')}={c.get('value')}" for c in cookies if c.get("name"))
-    return headers
+    # Prefer raw HTTP with clearance cookies (much faster than routing binary through FlareSolverr)
+    try:
+        await _download_binary(href, out_path)
+        return out_path
+    except Exception as e:
+        log.notice(f"Cookie download failed ({e}), retrying via FlareSolverr...")
 
+    # Fallback: let FlareSolverr fetch the URL (it will follow redirects; response is HTML or binary base64 in some setups —
+    # for pure binary we still rely on cookies; if this also fails we raise)
+    data = await _fs_request(
+        "request.get",
+        url=href,
+        session=await _ensure_session(),
+        maxTimeout=120000,
+    )
+    solution = data.get("solution") or {}
+    # Update cookies again
+    global _fs_cookies, _fs_user_agent
+    for c in solution.get("cookies") or []:
+        n = c.get("name")
+        if n:
+            _fs_cookies[n] = c.get("value", "")
+    if solution.get("userAgent"):
+        _fs_user_agent = solution["userAgent"]
 
-def _with_force_base_apk(url: str) -> str:
-    """Ask APKMirror's download.php for the monolithic/base APK when possible."""
-    if "download.php" not in url:
-        return url
-    parts = urlsplit(url)
-    query = parse_qsl(parts.query, keep_blank_values=True)
-    if any(key.lower() == "forcebaseapk" for key, _ in query):
-        return url
-    query.append(("forcebaseapk", "true"))
-    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
-
-
-def _without_force_base_apk(url: str) -> str:
-    if "download.php" not in url or "forcebaseapk" not in url.lower():
-        return url
-    parts = urlsplit(url)
-    query = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if k.lower() != "forcebaseapk"]
-    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
-
-
-async def _download_once(url: str, out_path: Path, solution: dict[str, Any]) -> Path:
-    temp_path = out_path.with_name(out_path.name + ".part")
-    headers = _download_headers(solution)
-    file_name = out_path.name
-    async with (
-        AsyncSession(timeout=None, allow_redirects=True, impersonate="firefox", headers=headers) as client,  # type: ignore[arg-type]
-        client.stream("GET", url) as res,
-    ):
-        if res.status_code >= 400:
-            raise RuntimeError(f"APKMirror download HTTP {res.status_code}")
-        file_name = _filename_from_content_disposition(res.headers.get("content-disposition"), file_name)
-        final_path = out_path.with_name(file_name)
-        with open(temp_path, "wb") as f:
-            async for chunk in res.aiter_content():
-                f.write(chunk)
-
-    size = temp_path.stat().st_size
-    if size < 1024:
-        temp_path.unlink(missing_ok=True)
-        raise RuntimeError(f"Downloaded file too small ({size} bytes)")
-
-    final_path = out_path.with_name(file_name)
-    temp_path.replace(final_path)
-    return _normalize_bundle_if_needed(final_path)
-
-
-async def _download_file(url: str, out_path: Path, solution: dict[str, Any]) -> Path:
-    candidates = [url]
-    fallback_url = _without_force_base_apk(url)
-    if fallback_url != url:
-        candidates.append(fallback_url)
-
-    last_error: Exception | None = None
-    for candidate in candidates:
-        try:
-            return await _download_once(candidate, out_path, solution)
-        except Exception as e:
-            last_error = e
-            log.warn(f"Download attempt failed for {candidate}: {e}")
-    assert last_error is not None
-    raise last_error
-
-
-async def _resolve_file_url(variant_url: str, solution: dict[str, Any]) -> str:
-    doc = _html_document(solution)
-    hrefs = doc.xpath("//a[contains(@class,'downloadButton')]/@href")
-    if not hrefs:
-        raise RuntimeError(f"No a.downloadButton found on variant page: {variant_url}")
-    confirm_url = _absolute(hrefs[0], variant_url)
-    if not confirm_url:
-        raise RuntimeError("Could not resolve download button URL")
-
-    if confirm_url.lower().endswith(".apk") or "download.php" in confirm_url:
-        return confirm_url
-
-    confirm_solution = await _get(confirm_url, label="download-confirm")
-    confirm_doc = _html_document(confirm_solution)
-    final_hrefs = confirm_doc.xpath("//a[@id='download-link']/@href")
-    if not final_hrefs:
-        final_hrefs = [
-            h for h in confirm_doc.xpath("//a/@href") if h.lower().endswith(".apk") or "download.php" in h
-        ]
-    if not final_hrefs:
-        raise RuntimeError(f"No #download-link found on confirm page: {confirm_url}")
-    file_url = _absolute(final_hrefs[0], confirm_url)
-    if not file_url:
-        raise RuntimeError("Could not resolve final download URL")
-    return file_url
+    # Try cookie download one more time with refreshed cookies
+    await _download_binary(href, out_path)
+    return out_path
 
 
 async def download_apk(version: str, app_name: str = "youtube", force_build: str | None = None) -> str:
@@ -513,46 +534,72 @@ async def download_apk(version: str, app_name: str = "youtube", force_build: str
     out_dir = Path(__file__).resolve().parent.parent.parent / "downloads"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    list_url, is_final = await _resolve_list_url(app_config, version)
-    log.info(f"LIST: {list_url}")
+    try:
+        list_url, is_final, cached_html = await _resolve_list_url(app_config, version)
+        log.info(f"LIST: {list_url}")
 
-    variant_url: str | None
-    if is_final:
-        variant_solution = await _get(list_url, label="variant-page")
-        variant_url = list_url
-        log.info(f"VARIANT: {variant_url} (single-variant release)")
-    else:
-        variant_solution = None
-        variant_url = None
-        for attempt in range(4):
-            solution = await _get(list_url, label="list-page")
-            variant_url = _extract_variant_url(solution, force_build, app_name, list_url)
-            if variant_url:
-                variant_solution = solution
-                break
-            log.notice(f"No matching row found on page, retrying ({attempt + 1}/4)...")
-        if not variant_url or variant_solution is None:
-            last_solution = await _get(list_url, label="list-page-debug")
-            _dump_variant_rows_for_debug(last_solution)
-            _save_diagnostic_html(last_solution, f"no-variant-{app_name}")
-            raise RuntimeError("No matching variant found on APKMirror")
-        log.info(f"VARIANT: {variant_url}")
-        variant_solution = await _get(variant_url, label="variant-page")
+        if is_final:
+            variant_url = list_url
+            html = cached_html or (await _fetch_page(variant_url, wait=1.2, label="variant-page"))[0]
+            log.info(f"VARIANT: {variant_url} (single-variant release)")
+        else:
+            variant_url = None
+            html = ""
+            for attempt in range(4):
+                html, _ = await _fetch_page(list_url, wait=1.5 + attempt * 1.0, label="list-page")
+                variant_url = _extract_variant_url(html, force_build, app_name)
+                if variant_url:
+                    break
+                log.notice(f"No matching row found on page, retrying ({attempt + 1}/4)...")
 
-    assert variant_solution is not None
-    resolved_variant_url: str = variant_url
-    file_url = await _resolve_file_url(resolved_variant_url, variant_solution)
-    log.download(f"Downloading: {file_url}")
+            if not variant_url:
+                _dump_variant_rows_for_debug(html)
+                _save_diagnostic_html(html, f"no-variant-{app_name}")
+                raise RuntimeError("No matching variant found on APKMirror")
 
-    file_name = Path(file_url.split("?")[0]).name or f"{app_name}-{version}.apk"
-    if not file_name.lower().endswith((".apk", ".apkm", ".xapk")):
-        file_name = f"{app_name}-{version}.apk"
-    final_path = out_dir / file_name
+            log.info(f"VARIANT: {variant_url}")
+            html, _ = await _fetch_page(variant_url, wait=1.2, label="variant-page")
 
-    downloaded_path = await _download_file(file_url, final_path, variant_solution)
-    size = downloaded_path.stat().st_size
-    log.success(f"DONE: {downloaded_path} ({size / 1024 / 1024:.2f} MB)")
-    return str(downloaded_path)
+        log.browser("Resolving download link...")
+        assert variant_url is not None
+        final_path: Path | None = None
+
+        try:
+            async for retry_attempt in AsyncRetrying(
+                stop=stop_after_attempt(4),
+                wait=_ChallengeCooldownWait(),
+                retry=retry_if_exception_type(_ChallengePresent),
+                before_sleep=lambda rs: log.notice(
+                    f"Download resolution failed, cooling down "
+                    f"{(rs.next_action.sleep if rs.next_action else 0):.0f}s before retrying "
+                    f"(attempt #{_challenge_hits} this run)..."
+                ),
+                reraise=True,
+            ):
+                with retry_attempt:
+                    if retry_attempt.retry_state.attempt_number > 1:
+                        html, _ = await _fetch_page(variant_url, wait=1.2, label="variant-page-retry")
+                        log.browser("Resolving download link...")
+                    final_path = await _attempt_download_from_html(html, variant_url, out_dir)
+                    if final_path is None:
+                        raise _ChallengePresent(_register_challenge())
+        except _ChallengePresent:
+            pass
+
+        if final_path is None or not final_path.exists():
+            log.error("Download did not start / file not detected.")
+            _save_diagnostic_html(html, f"no-download-{app_name}")
+            raise RuntimeError("Download did not start / file not detected.")
+
+        size = final_path.stat().st_size
+        if size < 1024:
+            raise RuntimeError(f"Downloaded file too small ({size} bytes)")
+
+        log.success(f"DONE: {final_path} ({size / 1024 / 1024:.2f} MB)")
+        return str(final_path)
+
+    except Exception:
+        raise
 
 
 def _version_from_href(href: str | None) -> str | None:
@@ -569,40 +616,43 @@ async def get_latest_listing(app_name: str) -> dict | None:
     if not app_config:
         raise RuntimeError(f'Unknown appName "{app_name}" - not found in APP_SITES')
 
-    listing_url = f"{BASE_URL}/apk/{app_config['org']}/{app_config['slug']}/"
-    log.info(f"LISTING: {listing_url}")
+    try:
+        listing_url = f"https://www.apkmirror.com/apk/{app_config['org']}/{app_config['slug']}/"
+        log.info(f"LISTING: {listing_url}")
 
-    candidates: list[dict[str, Any]] = []
-    for attempt in range(4):
-        solution = await _get(listing_url, label="app-listing")
-        doc = _html_document(solution)
-        for link in doc.xpath("//a[contains(@href,'-release/')]")[:15]:
-            href = _absolute(link.get("href"), listing_url)
-            row = link.xpath("ancestor::div[1] | ancestor::li[1] | ancestor::tr[1]")
-            text = _text(row[0]) if row else _text(link)
-            candidates.append({"href": href, "text": text})
-        if candidates:
-            break
-        log.notice(f"No link found on listing page, retrying ({attempt + 1}/4)...")
+        candidates: list[Any] = []
+        for attempt in range(4):
+            html, _ = await _fetch_page(listing_url, wait=2.5 + attempt * 1.2, label="app-listing")
+            soup = _soup(html)
+            candidates = []
+            for link in soup.select("a[href*='-release/']")[:15]:
+                href = link.get("href")
+                if href:
+                    href = urljoin("https://www.apkmirror.com", href)
+                row = link.find_parent(["div", "li", "tr"]) or link.parent
+                text = row.get_text(" ", strip=True) if row else link.get_text(strip=True)
+                candidates.append({"href": href, "text": text or ""})
+            if candidates:
+                break
+            log.notice(f"No link found on listing page, retrying ({attempt + 1}/4)...")
 
-    if not candidates:
+        if not candidates:
+            _save_diagnostic_html("", f"no-listing-{app_name}")
+            return None
+
+        for item in candidates:
+            href = item.get("href") if isinstance(item, dict) else None
+            text = item.get("text", "") if isinstance(item, dict) else ""
+
+            version = _version_from_href(href)
+            if not version:
+                match = re.search(r"\d+(?:\.\d+)+", text)
+                version = match.group(0) if match else None
+
+            if version:
+                return {"version": version, "href": href}
+
         return None
 
-    for item in candidates:
-        href = item.get("href")
-        text = item.get("text", "")
-        version = _version_from_href(href)
-        if not version:
-            match = re.search(r"\d+(?:\.\d+)+", text)
-            version = match.group(0) if match else None
-        if version:
-            return {"version": version, "href": href}
-    return None
-
-
-async def close_browser() -> None:
-    """Backward-compatible no-op kept for main.py.
-
-    FlareSolverr sessions are server-side; there is no local browser to close.
-    """
-    return None
+    except Exception:
+        raise

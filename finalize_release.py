@@ -7,14 +7,11 @@ from core.patch_tools import download_latest_github_asset
 from core.release import (
     create_new_release,
     delete_other_releases,
-    get_release_by_tag,
-    update_release,
     upload_microg_once,
     upload_patched_apk,
     upload_pothelper_once,
 )
 from core.settings import settings
-from morphe_builder.manifest import load_build_manifests
 
 
 def _build_asset_candidates() -> list[tuple[str, str, str | None]]:
@@ -80,36 +77,6 @@ def find_patched_apks(artifacts_dir: Path):
     return matched, unmatched
 
 
-def find_patched_apks_from_manifest(artifacts_dir: Path):
-    manifest = load_build_manifests(artifacts_dir)
-    if not manifest:
-        return None
-
-    matched = []
-    unmatched = []
-    for entry in manifest.get("apps", []):
-        name = entry.get("name")
-        app_key = entry.get("app_key")
-        if not name or app_key not in APPS_CONFIG:
-            unmatched.append(str(name))
-            continue
-        path = artifacts_dir / name
-        if not path.exists():
-            unmatched.append(name)
-            continue
-        matched.append(
-            {
-                "app_key": app_key,
-                "display_name": entry.get("display_name") or get_release_naming(app_key)[0],
-                "version": entry.get("version") or "",
-                "path": str(path),
-                "name": name,
-                "sha256": entry.get("sha256"),
-            }
-        )
-    return matched, unmatched
-
-
 async def main():
     if not settings.release_tag or not settings.release_name:
         raise RuntimeError("Missing RELEASE_TAG/RELEASE_NAME (expected to be set by prepare_release.py's output)")
@@ -118,12 +85,7 @@ async def main():
     artifacts_dir = settings.artifacts_dir
 
     log.step(f"Scanning {artifacts_dir} for patched APKs...")
-    manifest_result = find_patched_apks_from_manifest(artifacts_dir)
-    if manifest_result is not None:
-        matched, unmatched = manifest_result
-        log.info("Using build-manifest.json for artifact matching.")
-    else:
-        matched, unmatched = find_patched_apks(artifacts_dir)
+    matched, unmatched = find_patched_apks(artifacts_dir)
 
     for name in unmatched:
         log.warn(f"Could not match asset to a known app: {name}")
@@ -168,21 +130,10 @@ async def main():
             log.warn(f"Could not fetch release notes for {label}: {e}")
 
     log.step(f"Creating release: {release_tag}")
-    release = await get_release_by_tag(release_tag)
-    if release is not None:
-        log.warn(
-            f"Release {release_tag} already exists (id={release['id']}); refreshing notes and adding missing assets."
-        )
-        release = await update_release(release["id"], release_name, body)
-    else:
-        release = await create_new_release(release_tag, release_name, body, draft=False)
-        log.success(f"Release created: {release['tag_name']} (id={release['id']})")
+    release = await create_new_release(release_tag, release_name, body, draft=False)
+    log.success(f"Release created: {release['tag_name']} (id={release['id']})")
 
-    existing_assets = {a["name"] for a in release.get("assets", [])}
     for apk in matched:
-        if apk["name"] in existing_assets:
-            log.info(f"Skipping {apk['name']} (already uploaded)")
-            continue
         await upload_patched_apk(release, apk["path"])
 
     if any(apk["app_key"] in ("youtube", "youtube-music") for apk in matched):
@@ -192,7 +143,7 @@ async def main():
     log.success("All apps successfully published under one release!")
 
     try:
-        await delete_other_releases(release["id"], keep_latest=settings.release_keep_latest)
+        await delete_other_releases(release["id"])
         log.info("Old releases deleted.")
     except Exception as e:
         log.warn(f"Failed to delete old releases: {e}")

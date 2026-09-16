@@ -23,6 +23,7 @@ keeps working across androguard upgrades.
 """
 
 import hashlib
+import json
 import shutil
 import tempfile
 import zipfile
@@ -31,20 +32,21 @@ from pathlib import Path
 from androguard.core.apk import APK
 from cryptography.hazmat.primitives.serialization import Encoding
 
-from morphe_builder.json_atomic import load_json as _load_json_atomic
-from morphe_builder.json_atomic import save_json_atomic as _save_json_atomic
-
 from .. import log
 from ..settings import settings
 
 
 def _load_json(path: Path) -> dict:
-    data = _load_json_atomic(path, default={})
-    return data if isinstance(data, dict) else {}
+    if path.exists():
+        try:
+            return json.loads(path.read_text())
+        except Exception:
+            log.warn(f"Could not read/parse {path}, treating as empty.")
+    return {}
 
 
 def _save_json(path: Path, data: dict) -> None:
-    _save_json_atomic(path, data)
+    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
 
 
 def _cert_der_bytes(cert) -> bytes:
@@ -96,11 +98,10 @@ def _resolve_verifiable_apk(path: str) -> tuple[str, str | None]:
         return extracted_path, temp_dir
 
 
-def verify_apk_signature(apk_path: str, app_name: str) -> list[str]:
-    """Verify the downloaded source APK and return its certificate fingerprints."""
+def verify_apk_signature(apk_path: str, app_name: str) -> None:
     if settings.skip_signature_verify:
         log.warn(f"SKIP_SIGNATURE_VERIFY=1: skipping signature verification for {app_name}.")
-        return []
+        return
 
     log.lock(f"Verifying signature: {app_name} ({Path(apk_path).name})")
 
@@ -139,4 +140,3 @@ def verify_apk_signature(apk_path: str, app_name: str) -> list[str]:
         )
 
     log.success(f"Signature verified: {app_name} ({pinned})")
-    return fingerprints

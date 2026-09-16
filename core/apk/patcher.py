@@ -46,10 +46,7 @@ def patch_apk(
             key_password,
         ]
     else:
-        message = "Custom keystore credentials missing or file not found."
-        if settings.require_custom_keystore:
-            raise RuntimeError(message + " Refusing to fall back to the default Morphe testkey.")
-        log.warn(message + " Falling back to default Morphe testkey.")
+        log.warn("Custom keystore credentials missing or file not found. Falling back to default Morphe testkey.")
 
     for p in exclude or []:
         cmd += ["--disable", p]

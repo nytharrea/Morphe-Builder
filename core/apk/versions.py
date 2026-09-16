@@ -1,7 +1,5 @@
 import re
 
-from morphe_builder.version_policy import pick_version
-
 
 def extract_youtube_versions(output: str) -> list[dict]:
     results = []
@@ -38,8 +36,19 @@ def _version_core(version: str) -> str:
 
 
 def pick_latest_version(versions: list[dict]) -> str | None:
-    """Backwards-compatible wrapper for the historical selection policy."""
-    return pick_version(versions, "max_patches_then_version")
+    if not versions:
+        return None
+
+    def sort_key(item: dict):
+        parts = _version_core(item["version"]).split(".")
+        try:
+            core = tuple(int(p) for p in parts)
+        except ValueError:
+            core = (0,)
+        return (item["patches"], core)
+
+    best = max(versions, key=sort_key)
+    return best["version"]
 
 
 def to_apkmirror_version(version: str) -> str:
