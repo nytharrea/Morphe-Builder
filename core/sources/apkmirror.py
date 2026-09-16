@@ -378,46 +378,55 @@ async def _extract_variant_url(page: Page, force_build: str | None, app_name: st
     js = f"""
     (() => {{
         const rows = document.querySelectorAll('.variants-table .table-row');
-        const candidates = [null, null, null, null, null, null];
         const allowedArchs = [
             'universal', 'evrensel', 'noarch', 'arm64-v8a', 'arm64-v8a + armeabi-v7a', 'arm64-v8a + armeabi'
         ];
         const forceBuild = {json.dumps(force_build)};
         const appName = {json.dumps(app_name)};
 
-        for (const row of rows) {{
-            const cells = row.querySelectorAll('.table-cell');
-            if (cells.length < 4) continue;
+        function collect(useForceBuild) {{
+            const candidates = [null, null, null, null, null, null];
 
-            const link = cells[0].querySelector('a.accent_color');
-            if (!link) continue;
+            for (const row of rows) {{
+                const cells = row.querySelectorAll('.table-cell');
+                if (cells.length < 4) continue;
 
-            if (forceBuild && !cells[0].innerText.includes(forceBuild)) continue;
+                const link = cells[0].querySelector('a.accent_color');
+                if (!link) continue;
 
-            const badge = cells[0].querySelector('.apkm-badge');
-            const badgeText = badge ? badge.innerText.toUpperCase() : '';
-            const isBundle = badgeText.includes('BUNDLE') || badgeText.includes('PAKET');
+                if (useForceBuild && forceBuild && !cells[0].innerText.includes(forceBuild)) continue;
 
-            if (appName === 'instagram' && !isBundle) continue;
+                const badge = cells[0].querySelector('.apkm-badge');
+                const badgeText = badge ? badge.innerText.toUpperCase() : '';
+                const isBundle = badgeText.includes('BUNDLE') || badgeText.includes('PAKET');
 
-            const archText = (cells[1].innerText || '').trim().toLowerCase();
-            const dpiText = (cells[3].innerText || '').trim().toLowerCase();
+                if (appName === 'instagram' && !isBundle) continue;
 
-            const isTargetArch = archText === '' || allowedArchs.some(a => archText.includes(a));
-            if (!isTargetArch) continue;
+                const archText = (cells[1].innerText || '').trim().toLowerCase();
+                const dpiText = (cells[3].innerText || '').trim().toLowerCase();
 
-            const isNodpi = dpiText === '' || dpiText.includes('nodpi');
-            const isAnydpi = dpiText.includes('anydpi');
+                const isTargetArch = archText === '' || allowedArchs.some(a => archText.includes(a));
+                if (!isTargetArch) continue;
 
-            let slot;
-            if (isNodpi) slot = isBundle ? 3 : 0;
-            else if (isAnydpi) slot = isBundle ? 4 : 1;
-            else slot = isBundle ? 5 : 2;
+                const isNodpi = dpiText === '' || dpiText.includes('nodpi');
+                const isAnydpi = dpiText.includes('anydpi');
 
-            if (!candidates[slot]) candidates[slot] = link.href;
+                let slot;
+                if (isNodpi) slot = isBundle ? 3 : 0;
+                else if (isAnydpi) slot = isBundle ? 4 : 1;
+                else slot = isBundle ? 5 : 2;
+
+                if (!candidates[slot]) candidates[slot] = link.href;
+            }}
+
+            return candidates.find(c => c) || null;
         }}
 
-        return candidates.find(c => c) || null;
+        // Pass 1: pinned build number. Pass 2 (only if pinned build not found,
+        // e.g. app updated to a new version): best automatic pick.
+        let result = collect(true);
+        if (!result && forceBuild) result = collect(false);
+        return result;
     }})()
     """
     return await page.evaluate(js)
