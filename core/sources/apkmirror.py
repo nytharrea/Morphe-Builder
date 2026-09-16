@@ -2,9 +2,10 @@ import asyncio
 import random
 import re
 import time
+import zipfile
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
 
 from bs4 import BeautifulSoup
 from tenacity import AsyncRetrying, retry, retry_if_exception_type, stop_after_attempt
@@ -432,12 +433,69 @@ def _extract_variant_url(html: str, force_build: str | None, app_name: str) -> s
     return next((c for c in candidates if c), None)
 
 
-async def _download_binary(url: str, out_path: Path) -> None:
-    """Download a binary file using the clearance cookies + UA from FlareSolverr."""
-    headers: dict[str, str] = {}
+def _force_base_apk(url: str) -> str:
+    """Ensure APKMirror download URL requests the base APK, not an APKM bundle."""
+    parsed = urlparse(url)
+    qs = parse_qs(parsed.query, keep_blank_values=True)
+    qs["forcebaseapk"] = ["true"]
+    new_query = urlencode({k: v[-1] for k, v in qs.items()})
+    return urlunparse(parsed._replace(query=new_query))
+
+
+def _filename_from_content_disposition(header: str | None) -> str | None:
+    if not header:
+        return None
+    # filename*=UTF-8''... or filename="..."
+    match = re.search(r"filename\*\s*=\s*(?:UTF-8''|utf-8'')([^;]+)", header, re.I)
+    if match:
+        from urllib.parse import unquote
+
+        return unquote(match.group(1).strip().strip('"'))
+    match = re.search(r'filename\s*=\s*"([^"]+)"', header, re.I)
+    if match:
+        return match.group(1).strip()
+    match = re.search(r"filename\s*=\s*([^;]+)", header, re.I)
+    if match:
+        return match.group(1).strip().strip('"')
+    return None
+
+
+def _looks_like_apk_zip(path: Path) -> bool:
+    """True if path is a ZIP that contains AndroidManifest.xml (standard APK)."""
+    try:
+        if path.stat().st_size < 1024:
+            return False
+        with path.open("rb") as f:
+            magic = f.read(4)
+        if magic[:2] != b"PK":
+            return False
+        with zipfile.ZipFile(path, "r") as zf:
+            names = zf.namelist()
+            if "AndroidManifest.xml" in names:
+                return True
+            # Some APKs nest it; rare but check
+            return any(n.endswith("AndroidManifest.xml") for n in names)
+    except (OSError, zipfile.BadZipFile):
+        return False
+
+
+def _is_apkm_bundle(path: Path) -> bool:
+    """Heuristic: APKM is a ZIP of APKs without a root AndroidManifest.xml."""
+    try:
+        with zipfile.ZipFile(path, "r") as zf:
+            names = zf.namelist()
+            if "AndroidManifest.xml" in names:
+                return False
+            return any(n.lower().endswith(".apk") for n in names) or "info.json" in names
+    except (OSError, zipfile.BadZipFile):
+        return False
+
+
+async def _download_binary(url: str, out_dir: Path, fallback_name: str = "download.apk") -> Path:
+    """Download using clearance cookies + UA. Prefer Content-Disposition filename."""
+    headers: dict[str, str] = {"Referer": "https://www.apkmirror.com/"}
     if _fs_user_agent:
         headers["User-Agent"] = _fs_user_agent
-    headers["Referer"] = "https://www.apkmirror.com/"
 
     async with new_session(timeout=300, follow_redirects=True) as session:
         resp = await session.get(url, cookies=_fs_cookies, headers=headers)
@@ -445,26 +503,67 @@ async def _download_binary(url: str, out_path: Path) -> None:
         content = resp.content
         if len(content) < 1024:
             raise RuntimeError(f"Downloaded file too small ({len(content)} bytes)")
+
+        # Reject obvious HTML (challenge / interstitial saved as binary)
+        head = content[:200].lstrip().lower()
+        if head.startswith(b"<!doctype") or head.startswith(b"<html") or b"<title>" in content[:800]:
+            raise RuntimeError("Download returned HTML instead of an APK (likely still challenged)")
+
+        cd = resp.headers.get("content-disposition") or resp.headers.get("Content-Disposition")
+        name = _filename_from_content_disposition(cd) if cd else None
+        if not name:
+            name = fallback_name
+        # Sanitize path components
+        name = Path(name).name
+        if not name.lower().endswith((".apk", ".apkm", ".xapk", ".zip")):
+            name = name + ".apk"
+
+        out_path = out_dir / name
         out_path.write_bytes(content)
+        return out_path
 
 
 def _find_download_href(html: str, base_url: str) -> str | None:
-    """Extract the best download link from a variant or confirm page."""
+    """
+    Extract the best download link from a variant or confirm page.
+    Prefer #download-link, then downloadButton with forcebaseapk, then any downloadButton.
+    Avoid pure "APK Bundle" buttons when a base-APK alternative exists.
+    """
     soup = _soup(html)
 
-    # Prefer the final #download-link if present (confirm interstitial)
-    final = soup.select_one("#download-link")
-    if final and final.get("href"):
-        href = final["href"]
-        if not href.startswith(("javascript:", "#")):
-            return urljoin(base_url, href)
+    def _ok(href: str | None) -> str | None:
+        if not href or href.startswith(("javascript:", "#")):
+            return None
+        return urljoin(base_url, href)
 
-    # Main download button
-    btn = soup.select_one("a.downloadButton")
-    if btn and btn.get("href"):
-        href = btn["href"]
-        if not href.startswith(("javascript:", "#")):
-            return urljoin(base_url, href)
+    # Confirm interstitial final link
+    final = soup.select_one("#download-link")
+    if final:
+        href = _ok(final.get("href"))
+        if href:
+            return _force_base_apk(href)
+
+    buttons = soup.select("a.downloadButton")
+    scored: list[tuple[int, str]] = []
+    for btn in buttons:
+        href = _ok(btn.get("href"))
+        if not href:
+            continue
+        text = (btn.get_text(" ", strip=True) or "").lower()
+        classes = " ".join(btn.get("class") or []).lower()
+        score = 0
+        if "forcebaseapk=true" in href.lower():
+            score += 100
+        if "bundle" in text or "bundle" in classes or "paket" in text:
+            score -= 50
+        if "apk" in text and "bundle" not in text:
+            score += 20
+        scored.append((score, href))
+
+    if scored:
+        scored.sort(key=lambda x: x[0], reverse=True)
+        best = scored[0][1]
+        return _force_base_apk(best)
 
     return None
 
@@ -472,7 +571,7 @@ def _find_download_href(html: str, base_url: str) -> str | None:
 async def _attempt_download_from_html(html: str, page_url: str, out_dir: Path) -> Path | None:
     """
     From a variant/confirm page HTML, resolve the real download URL and fetch the file.
-    May need a second FlareSolverr round-trip if the first link is only a confirm page.
+    Validates the result is a real APK (ZIP + AndroidManifest.xml).
     """
     href = _find_download_href(html, page_url)
     if not href:
@@ -480,31 +579,50 @@ async def _attempt_download_from_html(html: str, page_url: str, out_dir: Path) -
 
     log.browser(f"Download candidate: {href}")
 
-    # If the href still points at apkmirror.com (confirm page), fetch it first
-    if "apkmirror.com" in href and not href.rstrip("/").endswith((".apk", ".apkm", ".xapk")):
+    # Confirm page on apkmirror (not yet download.php)
+    if (
+        "apkmirror.com" in href
+        and "download.php" not in href
+        and not href.rstrip("/").endswith((".apk", ".apkm", ".xapk"))
+    ):
         confirm_html, confirm_url = await _fetch_page(href, wait=1.5, label="confirm-page")
         final_href = _find_download_href(confirm_html, confirm_url)
         if not final_href:
-            # Sometimes the confirm page itself already has the direct CDN link in the same button
             final_href = href
-        href = final_href
+        href = _force_base_apk(final_href)
         log.browser(f"Resolved download URL: {href}")
+    else:
+        href = _force_base_apk(href)
 
-    # Guess filename from URL
-    name = href.split("?")[0].rstrip("/").split("/")[-1] or "download.apk"
-    if not name.lower().endswith((".apk", ".apkm", ".xapk", ".zip")):
-        name = name + ".apk"
-    out_path = out_dir / name
+    fallback_name = "download.apk"
+    path_part = href.split("?")[0].rstrip("/").split("/")[-1]
+    if path_part and path_part not in ("download.php", "download"):
+        fallback_name = path_part if path_part.lower().endswith((".apk", ".apkm")) else f"{path_part}.apk"
 
-    # Prefer raw HTTP with clearance cookies (much faster than routing binary through FlareSolverr)
+    async def _fetch_and_validate(url: str) -> Path:
+        path = await _download_binary(url, out_dir, fallback_name=fallback_name)
+        if _looks_like_apk_zip(path):
+            return path
+        if _is_apkm_bundle(path):
+            path.unlink(missing_ok=True)
+            raise RuntimeError(
+                f"Downloaded an APKM bundle instead of a base APK ({path.name}). "
+                "forcebaseapk=true did not yield a single APK."
+            )
+        # Not a valid APK — show a short head for diagnostics
+        try:
+            head = path.read_bytes()[:120]
+            log.warn(f"Invalid APK magic/head: {head!r}")
+        except OSError:
+            pass
+        path.unlink(missing_ok=True)
+        raise RuntimeError("Downloaded file is not a valid APK (missing AndroidManifest.xml)")
+
     try:
-        await _download_binary(href, out_path)
-        return out_path
+        return await _fetch_and_validate(href)
     except Exception as e:
-        log.notice(f"Cookie download failed ({e}), retrying via FlareSolverr...")
+        log.notice(f"Cookie download failed ({e}), refreshing cookies via FlareSolverr...")
 
-    # Fallback: let FlareSolverr fetch the URL (it will follow redirects; response is HTML or binary base64 in some setups —
-    # for pure binary we still rely on cookies; if this also fails we raise)
     data = await _fs_request(
         "request.get",
         url=href,
@@ -512,7 +630,6 @@ async def _attempt_download_from_html(html: str, page_url: str, out_dir: Path) -
         maxTimeout=120000,
     )
     solution = data.get("solution") or {}
-    # Update cookies again
     global _fs_cookies, _fs_user_agent
     for c in solution.get("cookies") or []:
         n = c.get("name")
@@ -521,9 +638,7 @@ async def _attempt_download_from_html(html: str, page_url: str, out_dir: Path) -
     if solution.get("userAgent"):
         _fs_user_agent = solution["userAgent"]
 
-    # Try cookie download one more time with refreshed cookies
-    await _download_binary(href, out_path)
-    return out_path
+    return await _fetch_and_validate(href)
 
 
 async def download_apk(version: str, app_name: str = "youtube", force_build: str | None = None) -> str:
