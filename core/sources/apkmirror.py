@@ -24,7 +24,7 @@ APP_SITES = {
     "youtube-music": {"org": "google-inc", "slug": "youtube-music"},
     "reddit": {"org": "reddit-inc", "slug": "reddit"},
     "twitter": {"org": "x-corp", "slug": "twitter", "release_slug": "x"},
-    "instagram": {"org": "instagram", "slug": "instagram"},
+    "instagram": {"org": "instagram", "slug": "instagram-instagram", "release_slug": "instagram"},
     "gboard": {"org": "google-inc", "slug": "gboard", "release_slug": "gboard-the-google-keyboard"},
     "speedtest": {"org": "ookla", "slug": "speedtest"},
     "brave": {"org": "brave-software", "slug": "brave-browser", "release_slug": "brave-private-web-browser-vpn"},
@@ -385,7 +385,8 @@ async def _extract_variant_url(page: Page, force_build: str | None, app_name: st
         const appName = {json.dumps(app_name)};
 
         function collect(useForceBuild) {{
-            const candidates = [null, null, null, null, null, null];
+            // Slot priority: 0 universal bundle > 1 universal APK > 2 nodpi bundle > 3 nodpi APK > 4 anydpi bundle > 5 anydpi APK > 6 other bundle > 7 other APK
+            const candidates = [null, null, null, null, null, null, null, null];
 
             for (const row of rows) {{
                 const cells = row.querySelectorAll('.table-cell');
@@ -408,13 +409,15 @@ async def _extract_variant_url(page: Page, force_build: str | None, app_name: st
                 const isTargetArch = archText === '' || allowedArchs.some(a => archText.includes(a));
                 if (!isTargetArch) continue;
 
+                const isUniversal = archText.includes('universal') || archText.includes('evrensel');
                 const isNodpi = dpiText === '' || dpiText.includes('nodpi');
                 const isAnydpi = dpiText.includes('anydpi');
 
                 let slot;
-                if (isNodpi) slot = isBundle ? 3 : 0;
-                else if (isAnydpi) slot = isBundle ? 4 : 1;
-                else slot = isBundle ? 5 : 2;
+                if (isUniversal) slot = isBundle ? 0 : 1;
+                else if (isNodpi) slot = isBundle ? 2 : 3;
+                else if (isAnydpi) slot = isBundle ? 4 : 5;
+                else slot = isBundle ? 6 : 7;
 
                 if (!candidates[slot]) candidates[slot] = link.href;
             }}
