@@ -62,7 +62,7 @@ async def _download_file(url: str, output_path: Path, expected_size: int | None 
     mode = "ab" if downloaded > 0 else "wb"
 
     async with (
-        new_session(follow_redirects=True, timeout=None) as client,
+        new_session(allow_redirects=True, timeout=None) as client,
         client.stream("GET", url, headers=headers) as res,
     ):
         if res.status_code >= 400:

@@ -69,7 +69,7 @@ async def _download_asset(client: AsyncSession, asset: dict) -> str:
 
 
 async def download_apk(version: str, app_name: str, force_build: str | None = None) -> str:
-    async with new_session(timeout=30, follow_redirects=True) as client:
+    async with new_session(timeout=30, allow_redirects=True) as client:
         if app_name in DIRECT_REPOS:
             owner, repo, name_hint, tag_template = DIRECT_REPOS[app_name]
 

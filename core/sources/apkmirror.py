@@ -305,7 +305,7 @@ async def _download_file(url: str, out_path: Path, solution: dict[str, Any]) -> 
     temp_path = out_path.with_name(out_path.name + ".part")
     headers = _download_headers(solution)
     async with (
-        AsyncSession(timeout=None, follow_redirects=True, impersonate="firefox", headers=headers) as client,
+        AsyncSession(timeout=None, allow_redirects=True, impersonate="firefox", headers=headers) as client,
         client.stream("GET", url) as res,
     ):
         if res.status_code >= 400:
