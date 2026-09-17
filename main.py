@@ -1,175 +1,61 @@
-import asyncio
-import random
-import shutil
-import subprocess
-from pathlib import Path
+"""Builder-Morphe ana derleme ve çalıştırma betiği."""
 
-from core import log
-from core.apk.patcher import patch_apk
-from core.apk.verify import verify_apk_signature
-from core.apk.versions import extract_youtube_versions, pick_latest_version
-from core.config import (
-    APKMIRROR_APPS,
-    APPS_CONFIG,
-    PATCH_SOURCES,
-    PROCESS_ORDER,
-    get_release_naming,
-    patch_sources_for,
+import logging
+import os
+import sys
+
+from core.apk.patcher import apply_patches
+from core.config import APPLICATIONS
+from core.http import NetworkSessionManager
+from core.settings import BUILD_DIR, FLARESOLVERR_URL
+from core.sources.apkmirror import APKMirrorSourceProvider
+from core.sources.github_apk import GitHubSourceProvider
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] (%(name)s) %(message)s",
 )
-from core.patch_tools import download_latest_github_asset
-from core.settings import settings
-from core.sources import apkmirror, github_apk
-
-DIST_DIR = Path.cwd() / "dist"
+logger = logging.getLogger("morphe.main")
 
 
-async def process_app(app_key: str, desktop: str, patches: list[str]) -> dict | None:
-    config = APPS_CONFIG[app_key]
-    log.header(f"PROCESSING: {config['name'].upper()}")
+def run_pipeline(app_name: str) -> None:
+    if app_name not in APPLICATIONS:
+        raise ValueError(f"Bilinmeyen hedef uygulama: {app_name}. Tanımlı: {list(APPLICATIONS.keys())}")
 
-    is_apkmirror_app = config["name"] in APKMIRROR_APPS
+    app_config = APPLICATIONS[app_name]
+    logger.info("=== [%s] Yamalama Süreci Başlatıldı ===", app_name)
 
-    selected_version = config.get("force_version")
+    app_build_dir = os.path.join(BUILD_DIR, app_name)
+    os.makedirs(app_build_dir, exist_ok=True)
+    raw_apk_path = os.path.join(app_build_dir, f"{app_name}-source.apk")
+    output_apk_path = os.path.join(app_build_dir, app_config["output_apk_name"])
 
-    if not selected_version:
-        patch_flags = []
-        for p in patches:
-            patch_flags += ["--patches", p]
+    session_mgr = NetworkSessionManager(solver_endpoint=FLARESOLVERR_URL)
 
-        result = subprocess.run(
-            [
-                "java",
-                "-jar",
-                desktop,
-                "list-versions",
-                "-f",
-                config["pkg"],
-                *patch_flags,
-                "--include-experimental",
-            ],
-            capture_output=True,
-            text=True,
+    if app_config["source_provider"] == "apkmirror":
+        provider = APKMirrorSourceProvider(session_mgr)
+        cfg = app_config["provider_config"]
+        direct_url = provider.resolve_apk_download(
+            org=cfg["org"],
+            app_slug=cfg["app_slug"],
+            target_arch=cfg.get("arch", "arm64-v8a"),
+            target_dpi=cfg.get("dpi", "nodpi"),
+            version=cfg.get("version"),
         )
-        output = (result.stdout or "") + (result.stderr or "")
-        versions = extract_youtube_versions(output)
-        if versions:
-            selected_version = pick_latest_version(versions)
-
-    if not selected_version:
-        raise RuntimeError(
-            f"Patcher reported no compatible version for {config['name']} ({config['pkg']}); "
-            f"refusing to guess a version it hasn't confirmed it can patch."
-        )
-
-    if is_apkmirror_app:
-        apk_path = await apkmirror.download_apk(selected_version, config["name"], config.get("force_build"))
+        session_mgr.download_file(direct_url, raw_apk_path)
+    elif app_config["source_provider"] == "github_apk":
+        provider = GitHubSourceProvider()
+        cfg = app_config["provider_config"]
+        download_url = provider.get_release_asset_url(cfg["repo"], cfg["asset_pattern"])
+        session_mgr.download_file(download_url, raw_apk_path)
     else:
-        apk_path = await github_apk.download_apk(selected_version, config["name"], config.get("force_build"))
+        raise NotImplementedError(f"Desteklenmeyen sağlayıcı: {app_config['source_provider']}")
 
-    verify_apk_signature(apk_path, config["name"])
-
-    patched_apk = patch_apk(
-        desktop,
-        patches,
-        apk_path,
-        exclude=config.get("exclude"),
-        enable=config.get("enable"),
-        arch=config["arch"],
-    )
-
-    if not Path(patched_apk).exists():
-        return None
-
-    display_name, source_tag = get_release_naming(app_key)
-    if source_tag:
-        final_name = f"{display_name}-{selected_version}-{source_tag}.apk"
-    else:
-        final_name = f"{display_name}-{selected_version}.apk"
-    DIST_DIR.mkdir(parents=True, exist_ok=True)
-    final_path = DIST_DIR / final_name
-
-    shutil.copyfile(patched_apk, final_path)
-
-    return {
-        "app_name": config["name"],
-        "display_name": display_name,
-        "icon": config["icon"],
-        "patch_source": config["patch_source"],
-        "name": final_name,
-        "path": str(final_path),
-        "version": selected_version,
-    }
-
-
-async def main():
-    try:
-        desktop_obj = await download_latest_github_asset(
-            owner="MorpheApp",
-            repo="morphe-desktop",
-            prerelease=True,
-            match=lambda n: "desktop" in n and n.endswith(".jar"),
-        )
-        desktop = desktop_obj["name"]
-
-        target_app = settings.target_app
-        apps_to_process = PROCESS_ORDER if target_app == "all" else [target_app]
-
-        patches_pool: dict[str, str | None] = {k: None for k in PATCH_SOURCES}
-
-        for key, (owner, repo, _label) in PATCH_SOURCES.items():
-            needed = any(key in patch_sources_for(k) for k in apps_to_process)
-            if needed:
-                asset = await download_latest_github_asset(
-                    owner=owner,
-                    repo=repo,
-                    prerelease=True,
-                    match=lambda n: n.endswith(".mpp"),
-                )
-                patches_pool[key] = asset["name"]
-
-        patched_apks_list = []
-        failed_apps = []
-
-        for app_key in apps_to_process:
-            try:
-                patch_files = []
-                for source in patch_sources_for(app_key):
-                    patch_file = patches_pool[source]
-                    if patch_file is None:
-                        raise RuntimeError(f"No patch file resolved for source '{source}'")
-                    patch_files.append(patch_file)
-                result = await process_app(app_key, desktop, patch_files)
-                if result:
-                    patched_apks_list.append(result)
-                    log.success(f"{app_key.upper()} done: {result['name']}")
-                else:
-                    failed_apps.append(app_key)
-            except Exception as err:
-                log.error(f"{app_key.upper()} failed, skipping: {err}")
-                failed_apps.append(app_key)
-
-            if APPS_CONFIG[app_key]["name"] in APKMIRROR_APPS and app_key != apps_to_process[-1]:
-                delay = random.uniform(6.0, 14.0)
-                log.wait(f"Waiting {delay:.0f}s before the next app (to reduce APKMirror request rate)...")
-                await asyncio.sleep(delay)
-
-        if patched_apks_list:
-            names = ", ".join(apk["name"] for apk in patched_apks_list)
-            log.saved(f"Patched APK(s) ready in {DIST_DIR}: {names}")
-            log.info("These will be picked up as a workflow artifact and published in the finalize job.")
-
-        if failed_apps:
-            log.error(f"Failed app(s): {', '.join(failed_apps)}")
-            raise SystemExit(1)
-
-    except SystemExit:
-        raise
-    except Exception as err:
-        log.error(f"Fatal error: {err}")
-        raise SystemExit(1) from err
-    finally:
-        await apkmirror.close_session()
+    logger.info("Ham APK hazırlandı: %s", raw_apk_path)
+    apply_patches(raw_apk_path, output_apk_path, app_config["patches"])
+    logger.info("=== [%s] İşlemi Tamamlandı ===", app_name)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    target = sys.argv[1] if len(sys.argv) > 1 else "instagram"
+    run_pipeline(target)
