@@ -1,10 +1,154 @@
-"""Merkezi log yapılandırması."""
+import re
+import sys
 
-import logging
+from loguru import logger
+
+from .settings import settings
+
+_COLOR_ENABLED = settings.no_color is None
+
+for _name, _color, _icon in [
+    ("HEADER", "<bold><cyan>", "▶"),
+    ("STEP", "<cyan>", "🔧"),
+    ("DOWNLOAD", "<magenta>", "📦"),
+    ("SEARCH", "<blue>", "🔍"),
+    ("BROWSER", "<blue>", "🌐"),
+    ("PATCH", "<cyan>", "🩹"),
+    ("LOCK", "<blue>", "🔐"),
+    ("SAVED", "<green>", "💾"),
+    ("WAIT", "<yellow>", "⏳"),
+    ("APPLIED", "<cyan>", "✅"),
+    ("SKIPPED", "<red>", "⏭️"),
+]:
+    logger.level(_name, no=21, color=_color, icon=_icon)
+
+logger.level("INFO", color="<blue>", icon="ℹ️")
+logger.level("SUCCESS", color="<bold><green>", icon="✅")
+logger.level("NOTICE", no=25, color="<yellow>", icon="🔁")
+logger.level("WARNING", color="<yellow>", icon="⚠️")
+logger.level("ERROR", color="<bold><red>", icon="❌")
 
 
-def setup_logging(level=logging.INFO):
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s [%(levelname)s] (%(name)s) %(message)s",
-    )
+def _format(record) -> str:
+    if record["level"].name == "HEADER":
+        return "\n<level>{level.icon} {message}</level>\n{exception}"
+    return "<level>{level.icon}  {message}</level>\n{exception}"
+
+
+logger.remove()
+logger.disable("androguard")
+
+logger.add(
+    sys.stdout,
+    level="TRACE",
+    format=_format,
+    colorize=_COLOR_ENABLED,
+    backtrace=True,
+    diagnose=False,
+)
+
+if settings.github_actions:
+
+    def _escape_workflow_command(text: str) -> str:
+        return text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+    def _github_annotation(message) -> None:
+        record = message.record
+        gha_level = "error" if record["level"].name == "ERROR" else "warning"
+        sys.stdout.write(f"::{gha_level}::{_escape_workflow_command(record['message'])}\n")
+
+    logger.add(_github_annotation, level="WARNING", format="{message}")
+
+
+def header(msg: str) -> None:
+    logger.log("HEADER", msg)
+
+
+def step(msg: str) -> None:
+    logger.log("STEP", msg)
+
+
+def info(msg: str) -> None:
+    logger.info(msg)
+
+
+def download(msg: str) -> None:
+    logger.log("DOWNLOAD", msg)
+
+
+def search(msg: str) -> None:
+    logger.log("SEARCH", msg)
+
+
+def browser(msg: str) -> None:
+    logger.log("BROWSER", msg)
+
+
+def patch(msg: str) -> None:
+    logger.log("PATCH", msg)
+
+
+def lock(msg: str) -> None:
+    logger.log("LOCK", msg)
+
+
+def success(msg: str) -> None:
+    logger.success(msg)
+
+
+def saved(msg: str) -> None:
+    logger.log("SAVED", msg)
+
+
+def warn(msg: str) -> None:
+    logger.warning(msg)
+
+
+def notice(msg: str) -> None:
+    """Like warn(), but for expected/self-recovering conditions (a retry,
+    a cooldown, "proceeding anyway") that shouldn't show up as a GitHub
+    Actions Annotation."""
+    logger.log("NOTICE", msg)
+
+
+def wait(msg: str) -> None:
+    logger.log("WAIT", msg)
+
+
+def error(msg: str) -> None:
+    logger.error(msg)
+
+
+_LEADING_ICON_RE = re.compile(r"^[^A-Za-z]+")
+
+_PATCH_LINE_RULES: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"^ERROR", re.IGNORECASE), "ERROR"),
+    (re.compile(r"^WARN", re.IGNORECASE), "NOTICE"),
+    (re.compile(r"applying \d+ patches", re.IGNORECASE), "PATCH"),
+    (re.compile(r"executing patches", re.IGNORECASE), "PATCH"),
+    (re.compile(r"^INFO:\s*Applied:", re.IGNORECASE), "APPLIED"),
+    (re.compile(r"^INFO:\s*Saved to", re.IGNORECASE), "SAVED"),
+    (re.compile(r"compiling patched dex", re.IGNORECASE), "PATCH"),
+    (re.compile(r"stripping libs|stripped \d+ lib", re.IGNORECASE), "PATCH"),
+    (re.compile(r"aligning apk", re.IGNORECASE), "PATCH"),
+    (re.compile(r"signing apk", re.IGNORECASE), "PATCH"),
+    (re.compile(r"purged .*temp files", re.IGNORECASE), "STEP"),
+    (re.compile(r"^\S[\w .\-']*: patched \d+ ", re.IGNORECASE), "APPLIED"),
+    (re.compile(r"^INFO:\s*Skipping disabled", re.IGNORECASE), "SKIPPED"),
+    (re.compile(r"^INFO:", re.IGNORECASE), "INFO"),
+]
+
+
+def patch_line(line: str) -> None:
+    stripped = line.rstrip("\n")
+    if not stripped.strip():
+        return
+
+    text = _LEADING_ICON_RE.sub("", stripped)
+
+    for pattern, level in _PATCH_LINE_RULES:
+        if pattern.search(text):
+            logger.log(level, text)
+            return
+
+    logger.log("INFO", text)

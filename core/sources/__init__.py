@@ -1,1 +1,1 @@
-"""APK kaynak sağlayıcıları paketi."""
+

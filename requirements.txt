@@ -1,3 +1,10 @@
-requests>=2.31.0
-beautifulsoup4>=4.12.0
-urllib3>=2.0.0
+# FlareSolverr (v3.5.2) ayri bir servis olarak calisir (workflow'da konteyner).
+# FlareSolverrSharp (v3.0.8) bir .NET kutuphanesidir; bu Python projesinde gerekmez.
+curl_cffi
+tenacity
+loguru
+androguard
+cryptography
+apprise
+pydantic-settings
+selectolax
