@@ -6,7 +6,7 @@ from pathlib import Path
 
 from core import log
 from core.apk.patcher import patch_apk
-from core.apk.verify import ensure_patchable_apk, verify_apk_signature
+from core.apk.verify import normalize_download_path, verify_apk_signature
 from core.apk.versions import extract_youtube_versions, rank_versions
 from core.config import (
     APKMIRROR_APPS,
@@ -117,25 +117,12 @@ async def process_app(app_key: str, desktop: str, patches: list[str]) -> dict | 
                 log.warn(f"Version {candidate} not available on APKMirror: {err}")
                 continue
 
-        # Last resort: whatever APKMirror currently lists as latest.
-        if apk_path is None and not forced:
-            latest = await apkmirror.get_latest_listing(app_name)
-            latest_ver = str(latest["version"]) if latest and latest.get("version") else None
-            if latest_ver and latest_ver not in version_candidates:
-                log.notice(f"All patcher versions missing on APKMirror – trying listing latest {latest_ver}")
-                try:
-                    apk_path = await apkmirror.download_apk(latest_ver, app_name, config.get("force_build"))
-                    selected_version = latest_ver
-                    log.warn(
-                        f"Downloaded APKMirror latest {latest_ver}; it may not be in the patcher "
-                        f"compatibility list – patching can still fail."
-                    )
-                except Exception as err:
-                    last_error = err if isinstance(err, Exception) else Exception(str(err))
+        # Do NOT fall back to a random APKMirror "latest" outside the patcher
+        # list — that yields "Applying 0 patches" (e.g. Termius 7.8.2 vs 7.9.0).
 
         if apk_path is None or selected_version is None:
             raise last_error or RuntimeError(
-                f"No downloadable version found on APKMirror for {app_name} "
+                f"No downloadable patcher-compatible version on APKMirror for {app_name} "
                 f"(tried: {', '.join(version_candidates)})"
             )
     else:
@@ -144,9 +131,9 @@ async def process_app(app_key: str, desktop: str, patches: list[str]) -> dict | 
 
     verify_apk_signature(apk_path, config["name"])
 
-    # APKMirror often saves APKM bundles as download.php; extract a real .apk
-    # so Morphe's patcher always sees AndroidManifest.xml at the archive root.
-    apk_path = ensure_patchable_apk(apk_path)
+    # Only fix the filename (.apk / .apkm). Never unpack the bundle — Morphe
+    # needs the full APKM for apps with splits (Instagram, Brave, …).
+    apk_path = normalize_download_path(apk_path)
 
     patched_apk = patch_apk(
         desktop,

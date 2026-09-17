@@ -98,56 +98,41 @@ def _resolve_verifiable_apk(path: str) -> tuple[str, str | None]:
         return extracted_path, temp_dir
 
 
-def ensure_patchable_apk(apk_path: str) -> str:
-    """Return a path the Morphe patcher can open as a single APK.
+def normalize_download_path(apk_path: str) -> str:
+    """Fix a generic CDN filename (e.g. download.php / download.apk) without
+    unpacking the archive.
 
-    APKMirror often serves APKM/XAPK bundles under a ``download.php`` URL.
-    Signature verification already peeks inside those bundles, but the patcher
-    still receives the outer archive and fails with
-    ``No AndroidManifest.xml in download.php`` for packages it does not treat
-    as multi-APK inputs.
-
-    When the file is a ZIP without a root ``AndroidManifest.xml``, extract
-    ``base.apk`` (or the first ``.apk`` entry) next to the download and return
-    that path. Single APKs are returned unchanged.
+    Morphe's patcher understands full APKM/XAPK bundles. Extracting only
+    ``base.apk`` breaks apps that need splits (Instagram, Brave, …). We only
+    rename the outer file to ``.apk`` or ``.apkm`` based on ZIP contents so the
+    tool sees the correct container type.
     """
     path = Path(apk_path)
     if not path.is_file():
         raise FileNotFoundError(f"Downloaded APK not found: {apk_path}")
 
+    if path.suffix.lower() in {".apk", ".apkm", ".xapk"}:
+        return str(path)
+
     if not zipfile.is_zipfile(path):
-        if path.suffix.lower() == ".apk":
-            return str(path)
-        raise Exception(f"{path.name} is neither a single .apk nor a ZIP-based bundle (.apkm/.xapk).")
+        return str(path)
 
     with zipfile.ZipFile(path) as zf:
         names = zf.namelist()
-        if "AndroidManifest.xml" in names:
-            if path.suffix.lower() not in {".apk", ".apkm", ".xapk"}:
-                renamed = path.with_suffix(".apk")
-                if not renamed.exists():
-                    path.rename(renamed)
-                    path = renamed
-            return str(path)
 
-        candidates = [n for n in names if n.split("/")[-1] == "base.apk"]
-        if not candidates:
-            candidates = [n for n in names if n.endswith(".apk")]
-        if not candidates:
-            raise Exception(f"No patchable .apk found inside {path.name}.")
+    if "AndroidManifest.xml" in names:
+        suffix = ".apk"
+    elif any(n.endswith(".apk") for n in names):
+        suffix = ".apkm"
+    else:
+        return str(path)
 
-        base_name = candidates[0]
-        out_name = Path(base_name).name
-        if out_name == "base.apk":
-            stem = path.stem
-            out_name = f"{stem}-base.apk" if stem not in {"download", "download.php"} else "base.apk"
-        out_path = path.with_name(out_name)
-
-        log.info(f"Bundle detected for patching – extracting {base_name} → {out_path.name}")
-        with zf.open(base_name) as src, open(out_path, "wb") as dst:
-            shutil.copyfileobj(src, dst)
-
-    return str(out_path)
+    renamed = path.with_suffix(suffix)
+    if renamed != path and not renamed.exists():
+        path.rename(renamed)
+        log.info(f"Normalized download name: {path.name} → {renamed.name}")
+        return str(renamed)
+    return str(path)
 
 
 def verify_apk_signature(apk_path: str, app_name: str) -> None:
