@@ -286,17 +286,19 @@ async def _resolve_list_url(session: str, app_config: dict, version: str) -> tup
 
 
 async def _download_file(url: str, cookies: dict[str, str], user_agent: str, out_dir: Path) -> Path:
-    async with new_session(impersonate="chrome", timeout=180) as client:
-        async with client.stream("GET", url, cookies=cookies, headers={"User-Agent": user_agent}) as response:
-            content_type = (response.headers.get("content-type") or "").lower()
-            if response.status_code >= 400 or "text/html" in content_type:
-                raise _DownloadNotAFile(f"HTTP {response.status_code}, content-type {content_type!r}")
+    async with (
+        new_session(impersonate="chrome", timeout=180) as client,
+        client.stream("GET", url, cookies=cookies, headers={"User-Agent": user_agent}) as response,
+    ):
+        content_type = (response.headers.get("content-type") or "").lower()
+        if response.status_code >= 400 or "text/html" in content_type:
+            raise _DownloadNotAFile(f"HTTP {response.status_code}, content-type {content_type!r}")
 
-            filename = parser.filename_from_response(url, response.headers)
-            final_path = out_dir / filename
-            with open(final_path, "wb") as f:
-                async for chunk in response.aiter_content():
-                    f.write(chunk)
+        filename = parser.filename_from_response(url, response.headers)
+        final_path = out_dir / filename
+        with open(final_path, "wb") as f:
+            async for chunk in response.aiter_content():
+                f.write(chunk)
 
     size = final_path.stat().st_size
     if size < 1024:

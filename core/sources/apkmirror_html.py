@@ -65,7 +65,9 @@ def is_404_page(html: str) -> bool:
     if tree is None:
         return False
     lowered = _title_and_body(tree, 300)
-    return "404" in lowered and ("whoops" in lowered or "could not be found" in lowered or "not be found" in lowered)
+    return "404" in lowered and (
+        "whoops" in lowered or "could not be found" in lowered or "not be found" in lowered
+    )
 
 
 def variant_rows(tree) -> list:
