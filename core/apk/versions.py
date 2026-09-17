@@ -35,20 +35,42 @@ def _version_core(version: str) -> str:
     return version.split("-")[0]
 
 
+def _version_sort_key(item: dict) -> tuple:
+    parts = _version_core(item["version"]).split(".")
+    try:
+        core = tuple(int(p) for p in parts)
+    except ValueError:
+        core = (0,)
+    return (item.get("patches", 0), core)
+
+
 def pick_latest_version(versions: list[dict]) -> str | None:
     if not versions:
         return None
-
-    def sort_key(item: dict):
-        parts = _version_core(item["version"]).split(".")
-        try:
-            core = tuple(int(p) for p in parts)
-        except ValueError:
-            core = (0,)
-        return (item["patches"], core)
-
-    best = max(versions, key=sort_key)
+    best = max(versions, key=_version_sort_key)
     return best["version"]
+
+
+def rank_versions(versions: list[dict], *, limit: int = 12) -> list[str]:
+    """Return patcher-compatible versions ordered best-first (unique).
+
+    Prefer higher patch-count, then higher version number. Used when the top
+    pick is missing from APKMirror so we can fall through the list for any app.
+    """
+    if not versions:
+        return []
+    ordered = sorted(versions, key=_version_sort_key, reverse=True)
+    seen: set[str] = set()
+    ranked: list[str] = []
+    for item in ordered:
+        v = item["version"]
+        if v in seen:
+            continue
+        seen.add(v)
+        ranked.append(v)
+        if len(ranked) >= limit:
+            break
+    return ranked
 
 
 def to_apkmirror_version(version: str) -> str:

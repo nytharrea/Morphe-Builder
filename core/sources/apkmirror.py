@@ -16,7 +16,9 @@ from ..apk.versions import to_apkmirror_version
 from ..http import new_session
 from . import apkmirror_html as parser
 
-APP_SITES = {
+# Explicit value type so mypy treats APP_SITES.get() as dict | None, not object | None.
+AppSiteConfig = dict[str, str | int | None]
+APP_SITES: dict[str, AppSiteConfig] = {
     "youtube": {"org": "google-inc", "slug": "youtube"},
     "youtube-music": {"org": "google-inc", "slug": "youtube-music"},
     "reddit": {"org": "reddit-inc", "slug": "reddit"},
@@ -303,6 +305,23 @@ async def _download_file(url: str, cookies: dict[str, str], user_agent: str, out
     size = final_path.stat().st_size
     if size < 1024:
         raise RuntimeError(f"Downloaded file too small ({size} bytes)")
+
+    # If the CDN left us with a generic name, sniff ZIP contents for a better extension.
+    if final_path.suffix.lower() not in {".apk", ".apkm", ".xapk"}:
+        import zipfile
+
+        if zipfile.is_zipfile(final_path):
+            with zipfile.ZipFile(final_path) as zf:
+                names = zf.namelist()
+            if "AndroidManifest.xml" in names:
+                better = final_path.with_suffix(".apk")
+            elif any(n.endswith(".apk") for n in names):
+                better = final_path.with_suffix(".apkm")
+            else:
+                better = None
+            if better is not None and not better.exists():
+                final_path.rename(better)
+                final_path = better
 
     return final_path
 

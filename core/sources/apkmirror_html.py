@@ -223,7 +223,10 @@ def filename_from_response(url: str, headers) -> str:
         if match:
             return unquote(match.group(1))
     name = Path(urlparse(url).path).name
-    return name or "download.apk"
+    # APKMirror CDN URLs are often .../download.php?id=... — keep a usable name.
+    if not name or name.lower() in {"download.php", "download", "index.php"}:
+        return "download.apk"
+    return name
 
 
 def version_from_href(href: str | None) -> str | None:

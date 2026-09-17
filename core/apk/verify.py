@@ -98,6 +98,58 @@ def _resolve_verifiable_apk(path: str) -> tuple[str, str | None]:
         return extracted_path, temp_dir
 
 
+def ensure_patchable_apk(apk_path: str) -> str:
+    """Return a path the Morphe patcher can open as a single APK.
+
+    APKMirror often serves APKM/XAPK bundles under a ``download.php`` URL.
+    Signature verification already peeks inside those bundles, but the patcher
+    still receives the outer archive and fails with
+    ``No AndroidManifest.xml in download.php`` for packages it does not treat
+    as multi-APK inputs.
+
+    When the file is a ZIP without a root ``AndroidManifest.xml``, extract
+    ``base.apk`` (or the first ``.apk`` entry) next to the download and return
+    that path. Single APKs are returned unchanged.
+    """
+    path = Path(apk_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"Downloaded APK not found: {apk_path}")
+
+    if not zipfile.is_zipfile(path):
+        if path.suffix.lower() == ".apk":
+            return str(path)
+        raise Exception(f"{path.name} is neither a single .apk nor a ZIP-based bundle (.apkm/.xapk).")
+
+    with zipfile.ZipFile(path) as zf:
+        names = zf.namelist()
+        if "AndroidManifest.xml" in names:
+            if path.suffix.lower() not in {".apk", ".apkm", ".xapk"}:
+                renamed = path.with_suffix(".apk")
+                if not renamed.exists():
+                    path.rename(renamed)
+                    path = renamed
+            return str(path)
+
+        candidates = [n for n in names if n.split("/")[-1] == "base.apk"]
+        if not candidates:
+            candidates = [n for n in names if n.endswith(".apk")]
+        if not candidates:
+            raise Exception(f"No patchable .apk found inside {path.name}.")
+
+        base_name = candidates[0]
+        out_name = Path(base_name).name
+        if out_name == "base.apk":
+            stem = path.stem
+            out_name = f"{stem}-base.apk" if stem not in {"download", "download.php"} else "base.apk"
+        out_path = path.with_name(out_name)
+
+        log.info(f"Bundle detected for patching – extracting {base_name} → {out_path.name}")
+        with zf.open(base_name) as src, open(out_path, "wb") as dst:
+            shutil.copyfileobj(src, dst)
+
+    return str(out_path)
+
+
 def verify_apk_signature(apk_path: str, app_name: str) -> None:
     if settings.skip_signature_verify:
         log.warn(f"SKIP_SIGNATURE_VERIFY=1: skipping signature verification for {app_name}.")
