@@ -59,7 +59,7 @@ jobs:
           python main.py ${{ matrix.app }}
 
       - name: Üretilen APK'ları Arşivle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.app }}-patched
           path: build/${{ matrix.app }}/*.apk
