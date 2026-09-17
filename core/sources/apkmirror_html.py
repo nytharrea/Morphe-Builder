@@ -119,25 +119,6 @@ def find_release_link(html: str, version_slug: str) -> str | None:
     return None
 
 
-def listing_candidates(html: str) -> list[dict]:
-    tree = parse(html)
-    if tree is None:
-        return []
-    links = [a for a in tree.xpath("//a[@href]") if "-release/" in (a.get("href") or "")][:15]
-    candidates = []
-    for link in links:
-        row = None
-        for ancestor in link.iterancestors():
-            if ancestor.tag in ("div", "li", "tr"):
-                row = ancestor
-                break
-        if row is None:
-            row = link.getparent()
-        text = row.text_content() if row is not None else (link.text_content() or "")
-        candidates.append({"href": link.get("href"), "text": text or ""})
-    return candidates
-
-
 def extract_variant_url(html: str, force_build: str | None, app_name: str) -> str | None:
     tree = parse(html)
     if tree is None:
@@ -223,16 +204,4 @@ def filename_from_response(url: str, headers) -> str:
         if match:
             return unquote(match.group(1))
     name = Path(urlparse(url).path).name
-    # APKMirror CDN URLs are often .../download.php?id=... — keep a usable name.
-    if not name or name.lower() in {"download.php", "download", "index.php"}:
-        return "download.apk"
-    return name
-
-
-def version_from_href(href: str | None) -> str | None:
-    if not href:
-        return None
-    match = re.search(r"-(\d[\d]*(?:-\d+)+)-release", href)
-    if not match:
-        return None
-    return match.group(1).replace("-", ".")
+    return name or "download.apk"

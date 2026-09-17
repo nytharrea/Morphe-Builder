@@ -1,7 +1,6 @@
 import asyncio
 import base64
 import contextlib
-import re
 import time
 from pathlib import Path
 from urllib.parse import urljoin
@@ -16,9 +15,7 @@ from ..apk.versions import to_apkmirror_version
 from ..http import new_session
 from . import apkmirror_html as parser
 
-# Explicit value type so mypy treats APP_SITES.get() as dict | None, not object | None.
-AppSiteConfig = dict[str, str | int | None]
-APP_SITES: dict[str, AppSiteConfig] = {
+APP_SITES = {
     "youtube": {"org": "google-inc", "slug": "youtube"},
     "youtube-music": {"org": "google-inc", "slug": "youtube-music"},
     "reddit": {"org": "reddit-inc", "slug": "reddit"},
@@ -50,11 +47,6 @@ APP_SITES: dict[str, AppSiteConfig] = {
         "org": "streetwriters-private-limited",
         "slug": "notesnook-private-notes-app",
         "release_slug": "notesnook-secure-private-notes",
-    },
-    "termius": {
-        "org": "termius-corporation",
-        "slug": "termius-ssh-telnet-client",
-        "release_slug": "termius-modern-ssh-client",
     },
 }
 
@@ -306,24 +298,6 @@ async def _download_file(url: str, cookies: dict[str, str], user_agent: str, out
     if size < 1024:
         raise RuntimeError(f"Downloaded file too small ({size} bytes)")
 
-    # Sniff ZIP: root manifest → .apk, nested APKs only → .apkm (even if already named .apk).
-    import zipfile
-
-    if zipfile.is_zipfile(final_path):
-        with zipfile.ZipFile(final_path) as zf:
-            names = zf.namelist()
-        if "AndroidManifest.xml" in names:
-            want = ".apk"
-        elif any(n.endswith(".apk") for n in names):
-            want = ".apkm"
-        else:
-            want = None
-        if want and final_path.suffix.lower() != want:
-            better = final_path.with_suffix(want)
-            if not better.exists():
-                final_path.rename(better)
-                final_path = better
-
     return final_path
 
 
@@ -435,47 +409,4 @@ async def download_apk(version: str, app_name: str = "youtube", force_build: str
     except Exception:
         if variant_url:
             await _save_diagnostics(session, variant_url, f"error-{app_name}")
-        raise
-
-
-async def get_latest_listing(app_name: str) -> dict | None:
-    app_config = APP_SITES.get(app_name)
-    if not app_config:
-        raise RuntimeError(f'Unknown appName "{app_name}" - not found in APP_SITES')
-
-    session = await _get_session()
-    listing_url = f"https://www.apkmirror.com/apk/{app_config['org']}/{app_config['slug']}/"
-
-    try:
-        log.info(f"LISTING: {listing_url}")
-
-        candidates: list[dict] = []
-        for attempt in range(4):
-            solution = await _fetch(session, listing_url, wait_seconds=2.5 + attempt * 1.2, label="app-listing")
-            candidates = parser.listing_candidates(solution.html)
-            if candidates:
-                break
-            log.notice(f"No link found on listing page, retrying ({attempt + 1}/4)...")
-
-        if not candidates:
-            await _save_diagnostics(session, listing_url, f"no-listing-{app_name}")
-            return None
-
-        for item in candidates:
-            href = item.get("href")
-            text = item.get("text", "")
-
-            version = parser.version_from_href(href)
-            if not version:
-                match = re.search(r"\d+(?:\.\d+)+", text)
-                version = match.group(0) if match else None
-
-            if version:
-                return {"version": version, "href": href}
-
-        await _save_diagnostics(session, listing_url, f"no-version-{app_name}")
-        return None
-
-    except Exception:
-        await _save_diagnostics(session, listing_url, f"error-listing-{app_name}")
         raise

@@ -98,50 +98,6 @@ def _resolve_verifiable_apk(path: str) -> tuple[str, str | None]:
         return extracted_path, temp_dir
 
 
-def normalize_download_path(apk_path: str) -> str:
-    """Ensure the file extension matches ZIP contents (APK vs APKM).
-
-    APKMirror CDN often saves bundles as ``download.apk``. If the archive has
-    no root ``AndroidManifest.xml`` but contains nested ``.apk`` entries it is
-    an APKM/XAPK — rename to ``.apkm`` so Morphe opens it as a bundle instead
-    of looking for a root manifest (which causes NPE / "No AndroidManifest").
-
-    Never unpacks the archive; full APKM is required for split apps.
-    """
-    path = Path(apk_path)
-    if not path.is_file():
-        raise FileNotFoundError(f"Downloaded APK not found: {apk_path}")
-
-    if not zipfile.is_zipfile(path):
-        return str(path)
-
-    with zipfile.ZipFile(path) as zf:
-        names = zf.namelist()
-
-    if "AndroidManifest.xml" in names:
-        # Real single APK (possibly misnamed .apkm or no extension).
-        suffix = ".apk"
-    elif any(n.endswith(".apk") for n in names):
-        # Bundle of APKs — must be .apkm/.xapk for the patcher.
-        suffix = ".apkm"
-    else:
-        return str(path)
-
-    if path.suffix.lower() == suffix:
-        return str(path)
-
-    renamed = path.with_suffix(suffix)
-    if renamed.exists():
-        # Avoid clobbering; use a unique name.
-        renamed = path.with_name(f"{path.stem}{suffix}")
-        if renamed.exists():
-            return str(path)
-    old_name = path.name
-    path.rename(renamed)
-    log.info(f"Normalized download name: {old_name} → {renamed.name}")
-    return str(renamed)
-
-
 def verify_apk_signature(apk_path: str, app_name: str) -> None:
     if settings.skip_signature_verify:
         log.warn(f"SKIP_SIGNATURE_VERIFY=1: skipping signature verification for {app_name}.")

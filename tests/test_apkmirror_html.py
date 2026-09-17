@@ -135,21 +135,6 @@ def test_find_release_link_none_when_no_match():
     assert p.find_release_link(LISTING_PAGE, "99-99-99") is None
 
 
-def test_listing_candidates_finds_both_release_links():
-    candidates = p.listing_candidates(LISTING_PAGE)
-    assert len(candidates) == 2
-    assert "19.30.30" in candidates[0]["text"]
-
-
-def test_version_from_href_parses_dashed_version():
-    assert p.version_from_href("/apk/google-inc/youtube/youtube-19-30-30-release/") == "19.30.30"
-
-
-def test_version_from_href_none_when_no_match():
-    assert p.version_from_href("/apk/google-inc/youtube/youtube-latest/") is None
-    assert p.version_from_href(None) is None
-
-
 def test_cookie_map_builds_dict_and_skips_malformed_entries():
     cookies = p.cookie_map([{"name": "cf_clearance", "value": "abc123"}, {"bad": "entry"}])
     assert cookies == {"cf_clearance": "abc123"}

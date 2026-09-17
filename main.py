@@ -6,8 +6,8 @@ from pathlib import Path
 
 from core import log
 from core.apk.patcher import patch_apk
-from core.apk.verify import normalize_download_path, verify_apk_signature
-from core.apk.versions import extract_youtube_versions, rank_versions
+from core.apk.verify import verify_apk_signature
+from core.apk.versions import extract_youtube_versions, pick_latest_version
 from core.config import (
     APKMIRROR_APPS,
     APPS_CONFIG,
@@ -22,118 +22,51 @@ from core.sources import apkmirror, github_apk
 
 DIST_DIR = Path.cwd() / "dist"
 
-# Failures that mean "this exact version is not on the mirror" — safe to try the next.
-_VERSION_MISSING_MARKERS = (
-    "No APKMirror release page found",
-    "No matching variant found on APKMirror",
-    "Giving up on ",
-)
-
-
-def _is_version_missing_error(err: BaseException) -> bool:
-    msg = str(err)
-    return any(marker in msg for marker in _VERSION_MISSING_MARKERS)
-
 
 async def process_app(app_key: str, desktop: str, patches: list[str]) -> dict | None:
     config = APPS_CONFIG[app_key]
     log.header(f"PROCESSING: {config['name'].upper()}")
 
     is_apkmirror_app = config["name"] in APKMIRROR_APPS
-    app_name = config["name"]
 
-    # Candidate versions, best-first. force_version wins and is not retried.
-    version_candidates: list[str] = []
-    forced = config.get("force_version")
-    if forced:
-        version_candidates = [forced]
-    else:
-        try:
-            patch_flags: list[str] = []
-            for p in patches:
-                patch_flags += ["--patches", p]
+    selected_version = config.get("force_version")
 
-            result = subprocess.run(
-                [
-                    "java",
-                    "-jar",
-                    desktop,
-                    "list-versions",
-                    "-f",
-                    config["pkg"],
-                    *patch_flags,
-                    "--include-experimental",
-                ],
-                capture_output=True,
-                text=True,
-            )
-            output = (result.stdout or "") + (result.stderr or "")
-            patcher_versions = extract_youtube_versions(output)
-            version_candidates = rank_versions(patcher_versions)
-            if version_candidates:
-                log.info(
-                    f"Patcher candidates ({len(version_candidates)}): "
-                    + ", ".join(version_candidates[:8])
-                    + ("…" if len(version_candidates) > 8 else "")
-                )
-        except Exception as e:
-            log.warn(f"Could not fetch version list: {e}")
+    if not selected_version:
+        patch_flags = []
+        for p in patches:
+            patch_flags += ["--patches", p]
 
-    if not version_candidates:
-        if not is_apkmirror_app:
-            version_candidates = ["latest"]
-        else:
-            latest = await apkmirror.get_latest_listing(app_name)
-            if latest and latest.get("version"):
-                version_candidates = [str(latest["version"])]
-                log.notice(f"No patcher list – falling back to APKMirror latest: {version_candidates[0]}")
+        result = subprocess.run(
+            [
+                "java",
+                "-jar",
+                desktop,
+                "list-versions",
+                "-f",
+                config["pkg"],
+                *patch_flags,
+                "--include-experimental",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        output = (result.stdout or "") + (result.stderr or "")
+        versions = extract_youtube_versions(output)
+        if versions:
+            selected_version = pick_latest_version(versions)
 
-    if not version_candidates:
-        raise RuntimeError("Could not determine a suitable version number.")
-
-    selected_version: str | None = None
-    apk_path: str | None = None
-    last_error: Exception | None = None
+    if not selected_version:
+        raise RuntimeError(
+            f"Patcher reported no compatible version for {config['name']} ({config['pkg']}); "
+            f"refusing to guess a version it hasn't confirmed it can patch."
+        )
 
     if is_apkmirror_app:
-        for idx, candidate in enumerate(version_candidates):
-            try:
-                if idx > 0:
-                    log.notice(
-                        f"{candidate} – retrying next patcher-compatible version "
-                        f"({idx + 1}/{len(version_candidates)}) after previous miss on APKMirror"
-                    )
-                apk_path = await apkmirror.download_apk(candidate, app_name, config.get("force_build"))
-                selected_version = candidate
-                if idx > 0:
-                    log.success(
-                        f"Using fallback version {candidate} (patcher preferred a newer build not on APKMirror)"
-                    )
-                break
-            except Exception as err:
-                last_error = err if isinstance(err, Exception) else Exception(str(err))
-                if forced or not _is_version_missing_error(err):
-                    raise
-                log.warn(f"Version {candidate} not available on APKMirror: {err}")
-                continue
-
-        # Do NOT fall back to a random APKMirror "latest" outside the patcher
-        # list — that yields "Applying 0 patches" (e.g. Termius 7.8.2 vs 7.9.0).
-
-        if apk_path is None or selected_version is None:
-            raise last_error or RuntimeError(
-                f"No downloadable patcher-compatible version on APKMirror for {app_name} "
-                f"(tried: {', '.join(version_candidates)})"
-            )
+        apk_path = await apkmirror.download_apk(selected_version, config["name"], config.get("force_build"))
     else:
-        selected_version = version_candidates[0]
-        apk_path = await github_apk.download_apk(selected_version, app_name, config.get("force_build"))
+        apk_path = await github_apk.download_apk(selected_version, config["name"], config.get("force_build"))
 
     verify_apk_signature(apk_path, config["name"])
-
-    # Only fix the filename (.apk / .apkm). Never unpack the bundle — Morphe
-    # needs the full APKM for apps with splits (Instagram, Brave, …).
-    apk_path = normalize_download_path(apk_path)
 
     patched_apk = patch_apk(
         desktop,

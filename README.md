@@ -134,7 +134,6 @@ Each row is one entry in `core/config.py`'s `PROCESS_ORDER` — the key used for
 | `inure-play` | `app.simple.inure.play` | GitHub | ⚡ Rushiranpise |
 | `proton-pass` | `proton.android.pass` | APKMirror | ⚡ Rushiranpise |
 | `notesnook` | `com.streetwriters.notesnook` | APKMirror | 🔥 hxreborn |
-| `termius` | `com.server.auditor.ssh.client` | APKMirror | ⚡ Rushiranpise |
 
 "APKMirror" means the app is scraped from apkmirror.com through the `flaresolverr` sidecar container (which solves Cloudflare's challenge and hands back a clearance cookie); "GitHub" means it's downloaded directly from a GitHub release (`core/sources/github_apk.py`'s `APP_TAGS`/`DIRECT_REPOS`), which is faster and doesn't need FlareSolverr at all.
 
@@ -153,7 +152,7 @@ Each row is one entry in `core/config.py`'s `PROCESS_ORDER` — the key used for
 
 | File | Purpose |
 |---|---|
-| `main.py` | The `patch` job's entry point. For one app: works out which version to fetch (a forced version, the patcher CLI's own `list-versions` output, or APKMirror's latest listing), downloads it, verifies its certificate, patches it, and copies the result into `dist/`. Also fetches the shared `morphe-desktop` patcher jar and every distinct patch bundle the selected apps need, once, before processing any app. Exits non-zero if any app failed, after attempting all of them. |
+| `main.py` | The `patch` job's entry point. For one app: works out which version to fetch (a forced version, or the patcher CLI's own `list-versions` output — the app fails outright if neither yields one, rather than guessing a version the patcher hasn't confirmed it can handle), downloads it, verifies its certificate, patches it, and copies the result into `dist/`. Also fetches the shared `morphe-desktop` patcher jar and every distinct patch bundle the selected apps need, once, before processing any app. Exits non-zero if any app failed, after attempting all of them. |
 | `prepare_release.py` | Runs in the `prepare` job. Computes a release tag/name for this run and writes them as step outputs (`release_tag`, `release_name`) for the later jobs to consume. |
 | `finalize_release.py` | Runs in the `finalize` job. Scans the downloaded artifacts directory, matches each `.apk` filename back to an app (`match_asset`), builds the release body (icons, versions, per-source collapsible changelogs), creates the GitHub Release, uploads every matched APK plus MicroG/PotHelper if relevant, deletes older releases, and sends the notification. |
 | `commit_signature.py` | Runs at the end of every `patch` matrix job (`if: always()`). Commits any new entries that app's run added to `data/known_signatures.json` / `data/pending_signatures.json` straight back to `main`, retrying on push conflicts since multiple matrix jobs commit in parallel. |
