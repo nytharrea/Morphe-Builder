@@ -176,7 +176,7 @@ async def main():
         log.error(f"Fatal error: {err}")
         raise SystemExit(1) from err
     finally:
-        await apkmirror.close_browser()
+        await apkmirror.close_session()
 
 
 if __name__ == "__main__":

@@ -19,7 +19,7 @@ A GitHub Actions pipeline that downloads Android APKs, patches them (ReVanced-st
 One workflow, `.github/workflows/patch.yml`, runs as four jobs:
 
 1. **`prepare`** — installs dependencies, freezes `requirements-lock.txt`, computes a release tag/name for this run (`prepare_release.py`), and pushes the lockfile if it changed.
-2. **`patch`** — a matrix job, one runner per app (see [Supported Apps](#supported-apps)), running in parallel. Each runner downloads that app's original APK (from APKMirror via FlareSolverr to bypass Cloudflare, or directly from a GitHub release), verifies its signing certificate against a pinned fingerprint, patches it with the matching patch bundle, re-signs it with your keystore, and uploads it as a build artifact.
+2. **`patch`** — a matrix job, one runner per app (see [Supported Apps](#supported-apps)), running in parallel, with a `flaresolverr` service container attached. Each runner downloads that app's original APK (from APKMirror via FlareSolverr's Cloudflare-solving proxy, or directly from a GitHub release), verifies its signing certificate against a pinned fingerprint, patches it with the matching patch bundle, re-signs it with your keystore, and uploads it as a build artifact.
 3. **`finalize`** — downloads every artifact the matrix produced, matches each file back to its app, builds one release description (with per-app version numbers and collapsible patch-source changelogs), creates a single GitHub Release with every APK attached, uploads MicroG/PotHelper companions if YouTube or YT Music was patched, deletes older releases, and sends a Discord/Telegram/Apprise notification.
 4. **`cleanup`** — deletes old workflow runs to keep the Actions tab tidy.
 
@@ -136,7 +136,7 @@ Each row is one entry in `core/config.py`'s `PROCESS_ORDER` — the key used for
 | `notesnook` | `com.streetwriters.notesnook` | APKMirror | 🔥 hxreborn |
 | `termius` | `com.server.auditor.ssh.client` | APKMirror | ⚡ Rushiranpise |
 
-"APKMirror" means the app is scraped from apkmirror.com through [FlareSolverr](https://github.com/FlareSolverr/FlareSolverr) (Cloudflare challenge solver) plus HTML parsing; "GitHub" means it's downloaded directly from a GitHub release (`core/sources/github_apk.py`'s `APP_TAGS`/`DIRECT_REPOS`), which is faster and doesn't need FlareSolverr at all.
+"APKMirror" means the app is scraped from apkmirror.com through the `flaresolverr` sidecar container (which solves Cloudflare's challenge and hands back a clearance cookie); "GitHub" means it's downloaded directly from a GitHub release (`core/sources/github_apk.py`'s `APP_TAGS`/`DIRECT_REPOS`), which is faster and doesn't need FlareSolverr at all.
 
 ## Adding a New App
 
@@ -166,7 +166,8 @@ Each row is one entry in `core/config.py`'s `PROCESS_ORDER` — the key used for
 | `settings.py` | One `pydantic-settings` `Settings` class declaring every environment variable the pipeline reads, case-insensitively (see [Configuration Reference](#configuration-reference)). |
 | `log.py` | Leveled, colored console logging (`log.step`, `log.info`, `log.warn`, `log.notice`, `log.success`, `log.error`, …), a `NOTICE` level for expected/self-recovering events (retries, cooldowns) that stay out of GitHub's Warning annotations, GitHub Actions annotation output for real warnings/errors, and `patch_line()`, which classifies and re-colors the patcher CLI's own raw output line by line. |
 | `retry.py` | Shared `tenacity` wait-strategy and `before_sleep` helpers used by every retry loop in the codebase, so backoff behavior and logging are consistent everywhere instead of hand-rolled per call site. |
-| `http.py` | One shared `curl_cffi` session factory (`new_session`), configured to impersonate a current Firefox TLS/HTTP fingerprint. |
+| `http.py` | One shared `curl_cffi` session factory (`new_session`), impersonating a Firefox TLS/HTTP fingerprint by default; callers can override it (e.g. `apkmirror.py` asks for a Chrome fingerprint to match FlareSolverr's browser). |
+| `flaresolverr.py` | Thin async client for the `flaresolverr` sidecar container's `/v1` API: `create_session`/`destroy_session` for a persistent, cookie-retaining browser session, and `solve_get` to load a URL and get back the solved HTML, cookies, and User-Agent. Raises `FlareSolverrError` on any transport failure or unsolved challenge, which `apkmirror.py` feeds into its own cooldown/retry logic. |
 | `patch_tools.py` | `download_latest_github_asset()` — fetch a GitHub repo's latest (or latest prerelease) release, pick the asset matching a predicate, and resumably download it with retries. Used for the patcher jar, every patch bundle, and the MicroG/PotHelper companions. |
 | `release.py` | Thin GitHub Releases REST API wrapper: create a release, list/delete releases and tags, upload an asset (replacing one of the same name if present), and the MicroG/PotHelper companion-upload helpers. |
 | `notify.py` | Sends the end-of-run summary through `apprise` to whichever of Discord/Telegram/Apprise-URL targets are configured; also builds the summary/all-failed message text. |
@@ -184,8 +185,9 @@ Each row is one entry in `core/config.py`'s `PROCESS_ORDER` — the key used for
 
 | File | Purpose |
 |---|---|
-| `apkmirror.py` | Downloads apps from apkmirror.com via FlareSolverr. A single FlareSolverr session is created for the whole run so Cloudflare clearance cookies stick between listing → variant → confirm → binary download. HTML is parsed with BeautifulSoup; the actual APK bytes are fetched with `curl_cffi` using the clearance cookies + matching User-Agent. Resolves an app + version to the right APKMirror URL (`APP_SITES` holds each app's org/slug), handles challenge cooldowns, and follows the variant / download-confirm link flow. |
-| `github_apk.py` | Downloads apps that are mirrored as a direct GitHub release asset instead — `APP_TAGS`/`DIRECT_REPOS` map an app to the repo to pull from. Plain HTTP via `core/http.py`, no browser involved. |
+| `apkmirror.py` | Downloads apps from apkmirror.com via the `flaresolverr` sidecar (one FlareSolverr session created once and reused across apps, the same way the old shared browser page was). Resolves an app + version to the right APKMirror URL (`APP_SITES` holds each app's org/slug), handles Cloudflare challenge pages and rate-limit cooldowns, resolves the variant/download-confirm page flow, and downloads the file. The download button's `href` is read straight out of the solved HTML and requested directly with `curl_cffi` (using FlareSolverr's own cookies + User-Agent) before ever falling back to resolving the confirm page through FlareSolverr again, since a plain HTTP request is far cheaper than another browser round-trip. |
+| `apkmirror_html.py` | Pure HTML-parsing helpers for the pages `apkmirror.py` fetches — no network, no async, so they're unit-tested directly (`tests/test_apkmirror_html.py`) against sample markup. Ports what used to be `page.evaluate()`'d JavaScript (variant-row scanning, challenge/404 detection, download-link extraction) to `lxml` XPath queries over FlareSolverr's returned HTML. |
+| `github_apk.py` | Downloads apps that are mirrored as a direct GitHub release asset instead — `APP_TAGS`/`DIRECT_REPOS` map an app to the repo to pull from. Plain HTTP via `core/http.py`, no FlareSolverr involved. |
 
 ### `.github/workflows/`
 
@@ -210,7 +212,7 @@ Each row is one entry in `core/config.py`'s `PROCESS_ORDER` — the key used for
 | `requirements.txt` | Direct, unpinned dependencies. |
 | `requirements-dev.txt` | The above plus `pytest`, `pytest-asyncio`, `ruff`, `mypy`. |
 | `requirements-lock.txt` | Full pinned dependency tree (`pip freeze`), regenerated and committed automatically by the `prepare` job on every run. |
-| `tests/` | `pytest` unit tests for `core/retry.py`, `core/validate.py`, `core/apk/versions.py`, and `finalize_release.py`'s asset-matching logic. |
+| `tests/` | `pytest` unit tests for `core/retry.py`, `core/validate.py`, `core/apk/versions.py`, `core/sources/apkmirror_html.py`, and `finalize_release.py`'s asset-matching logic. |
 | `.gitignore` | Excludes `__pycache__`, virtualenvs, downloaded APKs, `.env` files, and `diagnostics/`. |
 
 ## CI (Lint & Test)
@@ -233,9 +235,9 @@ Every environment variable `core/settings.py` reads (matched case-insensitively)
 | Variable | Used by | Notes |
 |---|---|---|
 | `GITHUB_TOKEN` | `finalize_release.py`, `core/release.py`, `commit_signature.py`'s git push | Provided automatically by Actions (`secrets.GITHUB_TOKEN`). |
+| `FLARESOLVERR_URL` | `core/flaresolverr.py` | Defaults to `http://localhost:8191/v1`, which is where the `patch` job's `flaresolverr` service container is reachable from; override only for local testing against a FlareSolverr instance running elsewhere. |
 | `GITHUB_REPOSITORY` | `core/release.py` | `owner/repo`, set automatically by Actions as `github.repository`. |
 | `TARGET_APP` | `main.py` | An app key to process just that one app; `all` (default) processes every key in `PROCESS_ORDER`. The `patch` job sets this to `matrix.app`. |
-| `FLARESOLVERR_URL` | `core/sources/apkmirror.py` | Base URL of a running FlareSolverr instance (default `http://127.0.0.1:8191`). The `patch` job starts FlareSolverr in Docker and points this at it. |
 | `KS_PATH` | `core/apk/patcher.py` | Path to the decoded keystore file; the workflow sets this to `Panemi.keystore` (where the "Setup Keystore" step decodes `KEYSTORE_BASE64` to). |
 | `KS_PASSWORD` | `core/apk/patcher.py` | From the `KEYSTORE_PASSWORD` secret. |
 | `KS_ALIAS` | `core/apk/patcher.py` | From the `KEY_ALIAS` secret. |

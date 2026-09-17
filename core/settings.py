@@ -51,13 +51,11 @@ class Settings(BaseSettings):
     no_color: str | None = None
     github_actions: bool = False
 
+    flaresolverr_url: str = "http://localhost:8191/v1"
+
     release_tag: str | None = None
     release_name: str | None = None
     artifacts_dir: Path = Path("artifacts")
-
-    # FlareSolverr proxy used by core/sources/apkmirror.py to bypass Cloudflare.
-    # Default matches the Docker service started in .github/workflows/patch.yml.
-    flaresolverr_url: str = "http://127.0.0.1:8191"
 
 
 settings = Settings()

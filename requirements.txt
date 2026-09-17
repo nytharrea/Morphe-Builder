@@ -1,9 +1,8 @@
 curl_cffi
+lxml
 tenacity
 loguru
 androguard
 cryptography
 apprise
 pydantic-settings
-beautifulsoup4
-lxml
