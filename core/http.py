@@ -38,7 +38,9 @@ class NetworkSessionManager:
             self.session.headers.update({"User-Agent": user_agent})
         return html
 
-    def download_file(self, url: str, destination_path: str, referer: str | None = None) -> None:
+    def download_file(
+        self, url: str, destination_path: str, referer: str | None = None
+    ) -> None:
         """Büyük APK dosyalarını bellek tüketmeden doğrudan diske akıtır."""
         headers: dict[str, str] = {
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
@@ -48,7 +50,9 @@ class NetworkSessionManager:
             headers["Referer"] = referer
 
         logger.info("APK indirme akışı başlatılıyor: %s -> %s", url, destination_path)
-        with self.session.get(url, headers=headers, stream=True, timeout=180) as response:
+        with self.session.get(
+            url, headers=headers, stream=True, timeout=180
+        ) as response:
             response.raise_for_status()
             with open(destination_path, "wb") as output_file:
                 for chunk in response.iter_content(chunk_size=65536):

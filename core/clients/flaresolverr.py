@@ -43,7 +43,7 @@ class FlareSolverrClient:
         try:
             requests.post(self.api_url, json=payload, timeout=self.timeout)
             logger.info("FlareSolverr oturumu sonlandırıldı: %s", self.session_id)
-        except Exception as exc:
+        except requests.RequestException as exc:
             logger.warning("Oturum kapatma uyarısı: %s", exc)
         finally:
             self.session_id = None
@@ -64,7 +64,9 @@ class FlareSolverrClient:
         data = response.json()
 
         if data.get("status") != "ok":
-            raise RuntimeError(f"FlareSolverr isteği çözemedi ({url}): {data.get('message')}")
+            raise RuntimeError(
+                f"FlareSolverr isteği çözemedi ({url}): {data.get('message')}"
+            )
 
         return data.get("solution", {})
 

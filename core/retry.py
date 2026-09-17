@@ -15,5 +15,7 @@ def retry(attempts=3, delay=2):
                     if i == attempts - 1:
                         raise
                     time.sleep(delay)
+
         return wrapper
+
     return decorator

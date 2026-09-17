@@ -20,7 +20,9 @@ logger = logging.getLogger("morphe.main")
 
 def run_pipeline(app_name: str) -> None:
     if app_name not in APPLICATIONS:
-        raise ValueError(f"Bilinmeyen hedef uygulama: {app_name}. Tanımlı: {list(APPLICATIONS.keys())}")
+        raise ValueError(
+            f"Bilinmeyen hedef uygulama: {app_name}. Tanımlı: {list(APPLICATIONS.keys())}"
+        )
 
     app_config = APPLICATIONS[app_name]
     logger.info("=== [%s] Yamalama Süreci Başlatıldı ===", app_name)
@@ -49,7 +51,9 @@ def run_pipeline(app_name: str) -> None:
         download_url = provider.get_release_asset_url(cfg["repo"], cfg["asset_pattern"])
         session_mgr.download_file(download_url, raw_apk_path)
     else:
-        raise NotImplementedError(f"Desteklenmeyen sağlayıcı: {app_config['source_provider']}")
+        raise NotImplementedError(
+            f"Desteklenmeyen sağlayıcı: {app_config['source_provider']}"
+        )
 
     logger.info("Ham APK hazırlandı: %s", raw_apk_path)
     apply_patches(raw_apk_path, output_apk_path, app_config["patches"])

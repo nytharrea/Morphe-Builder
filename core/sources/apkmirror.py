@@ -50,7 +50,9 @@ class APKMirrorSourceProvider:
 
         return direct_stream_url
 
-    def _extract_version_page_url(self, html: str, app_slug: str, version: str | None) -> str:
+    def _extract_version_page_url(
+        self, html: str, app_slug: str, version: str | None
+    ) -> str:
         soup = BeautifulSoup(html, "html.parser")
         app_rows = soup.find_all("div", class_="appRow")
 
@@ -70,11 +72,15 @@ class APKMirrorSourceProvider:
             else:
                 return urljoin(self.BASE_URL, link)
 
-        raise RuntimeError(f"APKMirror üzerinde kararlı sürüm tespit edilemedi: {app_slug}")
+        raise RuntimeError(
+            f"APKMirror üzerinde kararlı sürüm tespit edilemedi: {app_slug}"
+        )
 
     def _extract_variant_url(self, html: str, target_arch: str, target_dpi: str) -> str:
         soup = BeautifulSoup(html, "html.parser")
-        table = soup.find("div", class_="table-row-group") or soup.find("div", class_="variants-table")
+        table = soup.find("div", class_="table-row-group") or soup.find(
+            "div", class_="variants-table"
+        )
         if not table:
             raise RuntimeError("Varyant tablosu HTML içinde bulunamadı.")
 
@@ -93,7 +99,9 @@ class APKMirrorSourceProvider:
             arch_text = cells[1].get_text(strip=True).lower()
             dpi_text = cells[3].get_text(strip=True).lower()
 
-            match_arch = (target_arch.lower() in arch_text) or ("universal" in arch_text)
+            match_arch = (target_arch.lower() in arch_text) or (
+                "universal" in arch_text
+            )
             match_dpi = (target_dpi.lower() in dpi_text) or ("nodpi" in dpi_text)
 
             if match_arch and match_dpi:
@@ -103,7 +111,9 @@ class APKMirrorSourceProvider:
                     break
 
         if not selected_url:
-            raise RuntimeError(f"Hedef mimariye uygun varyant bulunamadı: {target_arch}, {target_dpi}")
+            raise RuntimeError(
+                f"Hedef mimariye uygun varyant bulunamadı: {target_arch}, {target_dpi}"
+            )
 
         return selected_url
 
