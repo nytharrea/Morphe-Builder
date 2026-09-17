@@ -99,20 +99,18 @@ def _resolve_verifiable_apk(path: str) -> tuple[str, str | None]:
 
 
 def normalize_download_path(apk_path: str) -> str:
-    """Fix a generic CDN filename (e.g. download.php / download.apk) without
-    unpacking the archive.
+    """Ensure the file extension matches ZIP contents (APK vs APKM).
 
-    Morphe's patcher understands full APKM/XAPK bundles. Extracting only
-    ``base.apk`` breaks apps that need splits (Instagram, Brave, …). We only
-    rename the outer file to ``.apk`` or ``.apkm`` based on ZIP contents so the
-    tool sees the correct container type.
+    APKMirror CDN often saves bundles as ``download.apk``. If the archive has
+    no root ``AndroidManifest.xml`` but contains nested ``.apk`` entries it is
+    an APKM/XAPK — rename to ``.apkm`` so Morphe opens it as a bundle instead
+    of looking for a root manifest (which causes NPE / "No AndroidManifest").
+
+    Never unpacks the archive; full APKM is required for split apps.
     """
     path = Path(apk_path)
     if not path.is_file():
         raise FileNotFoundError(f"Downloaded APK not found: {apk_path}")
-
-    if path.suffix.lower() in {".apk", ".apkm", ".xapk"}:
-        return str(path)
 
     if not zipfile.is_zipfile(path):
         return str(path)
@@ -121,18 +119,27 @@ def normalize_download_path(apk_path: str) -> str:
         names = zf.namelist()
 
     if "AndroidManifest.xml" in names:
+        # Real single APK (possibly misnamed .apkm or no extension).
         suffix = ".apk"
     elif any(n.endswith(".apk") for n in names):
+        # Bundle of APKs — must be .apkm/.xapk for the patcher.
         suffix = ".apkm"
     else:
         return str(path)
 
+    if path.suffix.lower() == suffix:
+        return str(path)
+
     renamed = path.with_suffix(suffix)
-    if renamed != path and not renamed.exists():
-        path.rename(renamed)
-        log.info(f"Normalized download name: {path.name} → {renamed.name}")
-        return str(renamed)
-    return str(path)
+    if renamed.exists():
+        # Avoid clobbering; use a unique name.
+        renamed = path.with_name(f"{path.stem}{suffix}")
+        if renamed.exists():
+            return str(path)
+    old_name = path.name
+    path.rename(renamed)
+    log.info(f"Normalized download name: {old_name} → {renamed.name}")
+    return str(renamed)
 
 
 def verify_apk_signature(apk_path: str, app_name: str) -> None:

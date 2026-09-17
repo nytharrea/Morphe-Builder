@@ -306,20 +306,21 @@ async def _download_file(url: str, cookies: dict[str, str], user_agent: str, out
     if size < 1024:
         raise RuntimeError(f"Downloaded file too small ({size} bytes)")
 
-    # If the CDN left us with a generic name, sniff ZIP contents for a better extension.
-    if final_path.suffix.lower() not in {".apk", ".apkm", ".xapk"}:
-        import zipfile
+    # Sniff ZIP: root manifest → .apk, nested APKs only → .apkm (even if already named .apk).
+    import zipfile
 
-        if zipfile.is_zipfile(final_path):
-            with zipfile.ZipFile(final_path) as zf:
-                names = zf.namelist()
-            if "AndroidManifest.xml" in names:
-                better = final_path.with_suffix(".apk")
-            elif any(n.endswith(".apk") for n in names):
-                better = final_path.with_suffix(".apkm")
-            else:
-                better = None
-            if better is not None and not better.exists():
+    if zipfile.is_zipfile(final_path):
+        with zipfile.ZipFile(final_path) as zf:
+            names = zf.namelist()
+        if "AndroidManifest.xml" in names:
+            want = ".apk"
+        elif any(n.endswith(".apk") for n in names):
+            want = ".apkm"
+        else:
+            want = None
+        if want and final_path.suffix.lower() != want:
+            better = final_path.with_suffix(want)
+            if not better.exists():
                 final_path.rename(better)
                 final_path = better
 
