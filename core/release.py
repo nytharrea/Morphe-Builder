@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import Callable
 from pathlib import Path
 
@@ -77,14 +78,15 @@ async def delete_tag(tag: str) -> None:
 
 
 async def delete_other_releases(keep_release_id: int) -> None:
-    releases = await list_releases()
+    releases = [r for r in await list_releases() if r["id"] != keep_release_id]
 
-    for release in releases:
-        if release["id"] == keep_release_id:
-            continue
+    async def _delete(release: dict) -> None:
         log.warn(f"Deleting old release: {release.get('tag_name')}")
         await delete_release(release["id"])
         await delete_tag(release["tag_name"])
+
+    # Silmeler birbirinden bagimsiz: paralel sil
+    await asyncio.gather(*(_delete(r) for r in releases))
 
 
 async def update_release_body(release_id: int, body: str) -> dict:
