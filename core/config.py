@@ -29,6 +29,10 @@ DISPLAY_NAMES: dict[str, str] = {
     "proton-vpn": "Proton VPN",
     "tiktok": "TikTok",
     "tiktok-hxreborn": "TikTok",
+    "tiktok-bluedragon": "TikTok",
+    "tiktok-hushfeed": "TikTok",
+    "tiktok-kveld": "TikTok",
+    "fairemail": "FairEmail",
     "warp": "1.1.1.1",
     "inshot": "InShot",
     "google-photos": "Google Photos",
@@ -55,6 +59,7 @@ APKMIRROR_APPS: list[str] = [
     "google-photos",
     "proton-pass",
     "notesnook",
+    "fairemail",
 ]
 
 APPS_CONFIG: dict[str, AppConfig] = {
@@ -177,6 +182,41 @@ APPS_CONFIG: dict[str, AppConfig] = {
         "exclude": [],
         "enable": ["Disable Play Store updates"],
     },
+    "tiktok-bluedragon": {
+        "pkg": "com.zhiliaoapp.musically",
+        "name": "tiktok",
+        "patch_source": ["bluedragon"],
+        "arch": "arm64-v8a",
+        "icon": "https://cdn.simpleicons.org/tiktok",
+        "exclude": [],
+        "enable": ["Disable Play Store updates"],
+    },
+    "tiktok-hushfeed": {
+        "pkg": "com.zhiliaoapp.musically",
+        "name": "tiktok",
+        "patch_source": ["hushfeed"],
+        "arch": "arm64-v8a",
+        "icon": "https://cdn.simpleicons.org/tiktok",
+        "exclude": [],
+        "enable": ["Disable Play Store updates"],
+    },
+    "tiktok-kveld": {
+        "pkg": "com.zhiliaoapp.musically",
+        "name": "tiktok",
+        "patch_source": ["kveld"],
+        "arch": "arm64-v8a",
+        "icon": "https://cdn.simpleicons.org/tiktok",
+        "exclude": [],
+        "enable": ["Disable Play Store updates"],
+    },
+    "fairemail": {
+        "pkg": "eu.faircode.email",
+        "name": "fairemail",
+        "patch_source": ["heval"],
+        "arch": "arm64-v8a",
+        "icon": "https://www.google.com/s2/favicons?sz=128&domain=email.faircode.eu",
+        "exclude": [],
+    },
     "warp": {
         "pkg": "com.cloudflare.onedotonedotonedotone",
         "name": "warp",
@@ -257,6 +297,9 @@ PROCESS_ORDER: list[str] = [
     "proton-vpn",
     "tiktok",
     "tiktok-hxreborn",
+    "tiktok-bluedragon",
+    "tiktok-hushfeed",
+    "tiktok-kveld",
     "warp",
     "inshot",
     "google-photos",
@@ -264,6 +307,7 @@ PROCESS_ORDER: list[str] = [
     "inure-play",
     "proton-pass",
     "notesnook",
+    "fairemail",
 ]
 
 PATCH_SOURCES: dict[str, tuple[str, str, str]] = {
@@ -279,6 +323,10 @@ PATCH_SOURCES: dict[str, tuple[str, str, str]] = {
     "jasonwu": ("jasonwu1994", "Gboard-patches", "⌨️ JasonWu Gboard"),
     "hxreborn": ("hxreborn", "morphe-patches", "🔥 hxreborn"),
     "hxreborn-tiktok": ("hxreborn", "hxreborn-tiktok-patches", "🔥 hxreborn TikTok"),
+    "bluedragon": ("BlueDragon4251", "tiktok-patches-for-morphe", "🐉 BlueDragon"),
+    "hushfeed": ("SysAdminDoc", "hushfeed", "📰 Hushfeed"),
+    "kveld": ("kveld9", "kveld-morphe-patches", "⚡ Kveld"),
+    "heval": ("heval99", "Heval-Morphe-Patches", "🟣 Heval"),
 }
 
 

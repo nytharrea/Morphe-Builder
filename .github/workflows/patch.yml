@@ -89,6 +89,9 @@ jobs:
           - proton-vpn
           - tiktok
           - tiktok-hxreborn
+          - tiktok-bluedragon
+          - tiktok-hushfeed
+          - tiktok-kveld
           - warp
           - inshot
           - google-photos
@@ -96,6 +99,7 @@ jobs:
           - inure-play
           - proton-pass
           - notesnook
+          - fairemail
 
     steps:
       - name: Checkout
