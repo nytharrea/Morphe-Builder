@@ -364,7 +364,7 @@ class APKMirrorClient:
         if variant_url is None:
             raise RuntimeError(f"Uygun variant bulunamadi ({app_name} v{version})")
         file_url = await self._find_download_link(variant_url)
-        log.link(f"Indirme linki: {file_url}")
+        log.link(f"Indirme linki: <magenta>{file_url}</magenta>")
 
         out_dir = Path.cwd() / "downloads"
         out_dir.mkdir(parents=True, exist_ok=True)

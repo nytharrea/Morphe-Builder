@@ -12,7 +12,7 @@ for _name, _color, _icon in [
     ("STEP", "<cyan>", "🔧"),
     ("DOWNLOAD", "<magenta>", "📦"),
     ("SEARCH", "<blue>", "🔍"),
-    ("LINK", "<bold><blue><u>", "🔗"),
+    ("LINK", "<bold><blue>", "🔗"),
     ("BROWSER", "<blue>", "🌐"),
     ("PATCH", "<cyan>", "🩹"),
     ("LOCK", "<blue>", "🔐"),
