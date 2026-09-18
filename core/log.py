@@ -12,6 +12,7 @@ for _name, _color, _icon in [
     ("STEP", "<cyan>", "🔧"),
     ("DOWNLOAD", "<magenta>", "📦"),
     ("SEARCH", "<blue>", "🔍"),
+    ("LINK", "<bold><blue><u>", "🔗"),
     ("BROWSER", "<blue>", "🌐"),
     ("PATCH", "<cyan>", "🩹"),
     ("LOCK", "<blue>", "🔐"),
@@ -78,6 +79,11 @@ def download(msg: str) -> None:
 
 def search(msg: str) -> None:
     logger.log("SEARCH", msg)
+
+
+def link(msg: str) -> None:
+    """Baglanti/dosya URL'lerini renkli olarak yazdirir."""
+    logger.log("LINK", msg)
 
 
 def browser(msg: str) -> None:

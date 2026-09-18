@@ -91,4 +91,5 @@ async def download_apk(version: str, app_name: str, force_build: str | None = No
         asset = _pick_apk_asset(release_data.get("assets") or [], name_hint)
         if not asset:
             raise RuntimeError(f'No .apk or .apkm file found in "{owner}/{repo}".')
+        log.link(f"Indirme linki: {asset['browser_download_url']}")
         return await _download_asset(client, asset)

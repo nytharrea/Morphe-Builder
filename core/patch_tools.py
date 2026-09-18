@@ -111,6 +111,7 @@ async def download_latest_github_asset(
 
     release, asset = selected
     log.info(f"Selected: {asset['name']} (release: {release.get('tag_name')})")
+    log.link(f"Indirme linki: {asset['browser_download_url']}")
 
     out_path = Path(asset["name"])
 
