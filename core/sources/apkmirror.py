@@ -59,6 +59,18 @@ APP_SITES = {
     # NOT: termius kaldirildi (artik patchlenmiyor).
 }
 
+_FILENAME_RE = re.compile("filename=([^;]+)", re.IGNORECASE)
+
+
+def _filename_from_disposition(header: str):
+    """Content-Disposition header'indan dosya adini cikar."""
+    match = _FILENAME_RE.search(header)
+    if not match:
+        return None
+    value = match.group(1).strip().strip('"').strip("'")
+    return value or None
+
+
 _CHALLENGE_MARKERS = (
     "just a moment",
     "checking your browser",
@@ -355,14 +367,16 @@ class APKMirrorClient:
 
         out_dir = Path.cwd() / "downloads"
         out_dir.mkdir(parents=True, exist_ok=True)
-        filename = Path(file_url.split("?")[0]).name or f"{app_name}-{version}.apk"
-        file_path = out_dir / filename
+        file_path = out_dir / f"{app_name}-{version}.part"
 
-        log.download(f"Indiriliyor: {filename}")
+        log.download(f"Indiriliyor: {app_name} v{version}")
         await self._throttle()
+        filename = f"{app_name}-{version}.apk"
         async with self._http.stream("GET", file_url) as res:
             if res.status_code >= 400:
                 raise RuntimeError(f"Indirme HTTP {res.status_code}")
+            # Gercek dosya adi Content-Disposition'da gelir; bundle ise .apkm olur
+            filename = _filename_from_disposition(res.headers.get("content-disposition") or "") or filename
             with open(file_path, "wb") as f:
                 async for chunk in res.aiter_content():
                     f.write(chunk)
@@ -371,8 +385,29 @@ class APKMirrorClient:
         if size < 1024:
             file_path.unlink(missing_ok=True)
             raise RuntimeError(f"Indirilen dosya cok kucuk ({size} bayt)")
-        log.success(f"Indirildi: {file_path} ({size / 1024 / 1024:.1f} MB)")
-        return str(file_path)
+
+        # Bundle (.apkm) mi duz APK mi: icerige bakarak karar ver.
+        # ZIP icinde baska .apk dosyalari varsa bundle'dir; morphe uzantidan
+        # anladigi icin dogru uzanti sart (aksi halde manifest NPE).
+        import zipfile
+
+        final_name = filename if filename.endswith((".apk", ".apkm")) else f"{app_name}-{version}.apk"
+        try:
+            with zipfile.ZipFile(file_path) as zf:
+                names = zf.namelist()
+            if not any(n == "AndroidManifest.xml" for n in names) and any(n.endswith(".apk") for n in names):
+                if final_name.endswith(".apk"):
+                    final_name = final_name[:-4] + ".apkm"
+                elif not final_name.endswith(".apkm"):
+                    final_name += ".apkm"
+                log.info("Bundle (.apkm) algilandi, uzanti duzeltildi")
+        except zipfile.BadZipFile:
+            pass  # duz APK (ZIP degil); uzantiya dokunma
+
+        final_path = out_dir / final_name
+        file_path.rename(final_path)
+        log.success(f"Indirildi: {final_path} ({size / 1024 / 1024:.1f} MB)")
+        return str(final_path)
 
 
 _client: APKMirrorClient | None = None

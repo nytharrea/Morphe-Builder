@@ -5,7 +5,7 @@ on:
 
 jobs:
   prepare:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
 
     permissions:
@@ -51,7 +51,7 @@ jobs:
 
   patch:
     needs: prepare
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 25
 
     # FlareSolverr v3.5.2 servisi (Camoufox/Playwright yerine)
@@ -196,7 +196,7 @@ jobs:
   finalize:
     needs: [prepare, patch]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
 
     permissions:
@@ -241,7 +241,7 @@ jobs:
   cleanup:
     needs: finalize
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       actions: write
     steps:
