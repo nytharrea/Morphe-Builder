@@ -131,17 +131,28 @@ jobs:
 
       - name: Wait for FlareSolverr to be ready
         run: |
-          for i in $(seq 1 30); do
-            if curl -s -X POST http://localhost:8191/v1 \
+          for i in $(seq 1 60); do
+            response=$(curl -sS -X POST http://localhost:8191/v1 \
                  -H 'Content-Type: application/json' \
-                 -d '{"cmd":"sessions.list"}' | grep -q '"status":"ok"'; then
-              echo "FlareSolverr is ready"
+                 -d '{"cmd":"sessions.create","session":"gha-healthcheck"}' 2>&1)
+            if printf '%s' "$response" | grep -q '"status"' && printf '%s' "$response" | grep -q '"ok"'; then
+              echo "FlareSolverr is ready: $response"
+              curl -s -X POST http://localhost:8191/v1 \
+                 -H 'Content-Type: application/json' \
+                 -d '{"cmd":"sessions.destroy","session":"gha-healthcheck"}' || true
               exit 0
             fi
-            echo "Waiting for FlareSolverr... ($i)"
+            if [ "$i" -eq 1 ] || [ $((i % 10)) -eq 0 ]; then
+              echo "FlareSolverr bekleniyor... ($i) son yanit: $response"
+            fi
             sleep 2
           done
-          echo "FlareSolverr did not become ready" >&2
+          echo "::error::FlareSolverr 120 saniye icinde hazir olmadi"
+          echo "=== calisan konteynerler ==="
+          docker ps -a || true
+          echo "=== FlareSolverr konteyner loglari ==="
+          container=$(docker ps -aq --filter ancestor=ghcr.io/flaresolverr/flaresolverr:v3.5.2 | head -1)
+          [ -n "$container" ] && docker logs "$container" || echo "konteyner bulunamadi"
           exit 1
 
       - name: Setup Keystore

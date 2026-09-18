@@ -162,7 +162,7 @@ class APKMirrorClient:
         log.search(f"APKMirror liste sayfasi: {url}")
         tree = HTMLParser(await self.get_html(url))
         for anchor in tree.css("a[href*='-release/']"):
-            href = anchor.attributes.get("href", "")
+            href = anchor.attributes.get("href") or ""
             match = _VERSION_SLUG_RE.search(href)
             if match:
                 version = match.group(1).replace("-", ".")
@@ -190,7 +190,7 @@ class APKMirrorClient:
         tree = HTMLParser(await self.get_html(f"{folder_url}/"))
         slug_part = f"-{version_slug}-"
         for anchor in tree.css("a[href*='-release/']"):
-            href = anchor.attributes.get("href", "")
+            href = anchor.attributes.get("href") or ""
             if slug_part in href and "#" not in href:
                 return urljoin(self._base, href)
 
@@ -243,7 +243,7 @@ class APKMirrorClient:
         res = await self._http.get(confirm_url)
         tree = HTMLParser(res.text)
         for anchor in tree.css("a[href]"):
-            href = anchor.attributes["href"]
+            href = anchor.attributes.get("href") or ""
             if _DOWNLOAD_HREF_RE.search(href):
                 return urljoin(self._base, href)
         raise RuntimeError(f"Indirme baglantisi bulunamadi: {confirm_url}")

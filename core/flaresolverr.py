@@ -61,15 +61,28 @@ class FlareSolverrClient:
             )
         return data
 
+    @retry(
+        stop=stop_after_attempt(15),
+        wait=retry_conf.incrementing(start=2.0, increment=2.0, max=20.0),
+        before_sleep=retry_conf.before_sleep("FlareSolverr oturum acma"),
+        reraise=True,
+    )
+    async def _create_session(self) -> None:
+        await self._command({"cmd": "sessions.create", "session": self._session_name})
+
     async def start(self) -> None:
-        """Healthcheck + kalici oturum olustur (idempotent)."""
+        """Healthcheck + kalici oturum olustur (idempotent).
+
+        Ilk oturumda FlareSolverr icindeki Chrome/driver baslatma yavas
+        olabildigi icin (ozellikle CI'da) uzun aralikli retry kullanilir.
+        """
         if self._started:
             return
         async with self._lock:
             if self._started:
                 return
             log.step(f"FlareSolverr baglaniliyor: {self._base} (v3.5.2)")
-            await self._command({"cmd": "sessions.create", "session": self._session_name})
+            await self._create_session()
             self._started = True
             log.success(f"FlareSolverr oturumu hazir: {self._session_name}")
 
