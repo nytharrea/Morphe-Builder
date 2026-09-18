@@ -94,7 +94,7 @@ class APKMirrorClient:
     def __init__(self) -> None:
         base = settings.apkmirror_base_url.rstrip("/")
         self._base = base
-        self._http = new_session(follow_redirects=True, timeout=60, impersonate="firefox")
+        self._http = new_session(follow_redirects=True, timeout=60)
         self._http.headers["Referer"] = f"{base}/"
         self._flaresolverr = FlareSolverrClient()
         self._last_request = 0.0
