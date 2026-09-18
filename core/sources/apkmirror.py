@@ -101,7 +101,22 @@ class APKMirrorClient:
 
     async def __aenter__(self) -> "APKMirrorClient":
         await self._flaresolverr.start()
+        await self._prime_clearance()
         return self
+
+    async def _prime_clearance(self) -> None:
+        """Kosunun basinda cf_clearance'i proaktif olarak coz.
+
+        Bazi kosularda APKMirror ilk sayfa isteklerinde challenge
+        gostermeden da ilerliyor, ancak onay (download) sayfasinda
+        birden korumaya giriyor. Clearance bastan alinirsa tim
+        istekler korunmus olur (eski Camoufox akisindaki gibi).
+        """
+        try:
+            await self._apply_clearance(f"{self._base}/")
+            log.info("APKMirror clearance (cf_clearance) alindi")
+        except Exception as e:
+            log.warn(f"Proaktif clearance alinamadi, gerektiginde tekrar denenecek: {e}")
 
     async def __aexit__(self, *exc) -> None:
         await self.close()
@@ -232,22 +247,102 @@ class APKMirrorClient:
 
         return next((c for c in candidates if c), None)
 
+    async def _fetch_confirm_page(self, confirm_url: str, referer: str) -> str:
+        """Onay (download) sayfasini cek; challenge/404 durumlarinda FlareSolverr
+        ile cozumleyip tekrar dener. Geçici hatalara karsi tenacity retry'li."""
+        return await self.get_html(confirm_url, referer=referer)
+
     async def _find_download_link(self, page_url: str) -> str:
         html = await self.get_html(page_url, referer=page_url.rsplit("/", 2)[0] + "/")
         tree = HTMLParser(html)
         button = tree.css_first("a.downloadButton")
         if button is None:
             raise RuntimeError(f"downloadButton bulunamadi: {page_url}")
-        confirm_url = urljoin(page_url, button.attributes["href"])
-        await self._throttle()
-        res = await self._http.get(confirm_url)
-        tree = HTMLParser(res.text)
-        for anchor in tree.css("a[href]"):
-            href = anchor.attributes.get("href") or ""
-            if _DOWNLOAD_HREF_RE.search(href):
-                return urljoin(self._base, href)
-        raise RuntimeError(f"Indirme baglantisi bulunamadi: {confirm_url}")
+        confirm_url = urljoin(page_url, button.attributes.get("href") or "")
 
+        last_error: Exception | None = None
+        for attempt in range(1, 4):
+            try:
+                return await self._extract_from_confirm_page(confirm_url, referer=page_url)
+            except RuntimeError as e:
+                last_error = e
+                log.warn(f"Indirme sayfasi cozumleme denemesi {attempt}/3 basarisiz: {e}")
+                await asyncio.sleep(random.uniform(3.0, 6.0) * attempt)
+
+        raise RuntimeError(f"Indirme baglantisi bulunamadi ({confirm_url}): {last_error}")
+
+    async def _extract_from_confirm_page(self, confirm_url: str, referer: str) -> str:
+        """Onay sayfasindan gercek dosya baglantisini cikarir.
+
+        APKMirror bazen dosyayi dogrudan onay URL'sinden akittir
+        (content-type ile anlasilir), bazen sayfada download.php /
+        download.apkmirror.com baglantisi sunar, bazen meta refresh ile
+        yonlendirir. Uc durum da kapsanir; hicbiri yoksa sayfadaki
+        baglantilarin ozeti hata mesajina eklenir (teşhis).
+        """
+        await self._throttle()
+        res = await self._http.get(confirm_url, headers={"Referer": referer})
+        self._last_request = time.monotonic()
+
+        if _looks_like_challenge(res.status_code, res.text):
+            log.warn(f"Cloudflare challenge (onay sayfasi): {confirm_url}")
+            await self._apply_clearance(confirm_url)
+            await self._throttle()
+            res = await self._http.get(confirm_url, headers={"Referer": referer})
+            self._last_request = time.monotonic()
+            if _looks_like_challenge(res.status_code, res.text):
+                raise RuntimeError("Onay sayfasinda challenge cozulemedi")
+
+        content_type = (res.headers.get("content-type") or "").lower()
+        disposition = (res.headers.get("content-disposition") or "").lower()
+        if (
+            res.status_code == 200
+            and (
+                "application/vnd.android" in content_type
+                or "octet-stream" in content_type
+                or ".apk" in disposition
+            )
+            and len(res.content) > 100_000
+        ):
+            # Sunucu dosyayi dogrudan akitti; onay URL'si indirilecek.
+            log.info("Onay URL'si dosyayi dogrudan akittiyor")
+            return confirm_url
+
+        if res.status_code >= 400:
+            raise RuntimeError(f"Onay sayfasi HTTP {res.status_code}")
+
+        tree = HTMLParser(res.text)
+
+        # 1) meta refresh: <meta http-equiv="refresh" content="0;url=...">
+        for meta in tree.css("meta[http-equiv]"):
+            if (meta.attributes.get("http-equiv") or "").lower() != "refresh":
+                continue
+            content = meta.attributes.get("content") or ""
+            match = re.search(r"url\s*=\s*['\"]([^'\"]+)['\"]", content, re.IGNORECASE)
+            if match:
+                return urljoin(self._base, match.group(1))
+
+        # 2) script yonlendirmesi: window.location = '...'
+        for script in tree.css("script"):
+            match = re.search(r"(?:location|href)\s*=\s*['\"]([^'\"]+)['\"]", script.text() or "")
+            if match and ("download" in match.group(1) or ".apk" in match.group(1)):
+                return urljoin(self._base, match.group(1))
+
+        # 3) aday baglantilar: download.php | download.apkmirror.com | .apk/.apkm
+        hrefs = [(a.attributes.get("href") or "") for a in tree.css("a[href]")]
+        for href in hrefs:
+            if _DOWNLOAD_HREF_RE.search(href) or "download.apkmirror.com" in href:
+                return urljoin(self._base, href)
+
+        preview = ", ".join(h for h in hrefs if h)[:500] or "(hic baglanti yok)"
+        raise RuntimeError(f"Sayfada indirme baglantisi yok; bulunan baglantilar: {preview}")
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=retry_conf.incrementing(start=5.0, increment=10.0, max=30.0),
+        before_sleep=retry_conf.before_sleep("APKMirror indirme"),
+        reraise=True,
+    )
     async def download_apk(self, version: str, app_name: str, force_build: str | None = None) -> str:
         site = APP_SITES[app_name]
         log.step(f"APKMirror cozumleniyor: {app_name.upper()} v{version}")
@@ -288,6 +383,7 @@ async def _get_client() -> APKMirrorClient:
     if _client is None:
         _client = APKMirrorClient()
         await _client._flaresolverr.start()
+        await _client._prime_clearance()
     return _client
 
 
