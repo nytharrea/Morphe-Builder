@@ -135,15 +135,15 @@ Each row is one entry in `core/config.py`'s `PROCESS_ORDER` — the key used for
 | `proton-pass` | `proton.android.pass` | APKMirror | ⚡ Rushiranpise |
 | `notesnook` | `com.streetwriters.notesnook` | APKMirror | 🔥 hxreborn |
 
-"APKMirror" means the app is scraped from apkmirror.com through a real (Camoufox-driven) Firefox browser; "GitHub" means it's downloaded directly from a GitHub release (`core/sources/github_apk.py`'s `APP_TAGS`/`DIRECT_REPOS`), which is faster and doesn't need a browser at all.
+"APKMirror" means the app is scraped from apkmirror.com through a real (Camoufox-driven) Firefox browser; "GitHub" means it's downloaded directly from a GitHub release (`core/sources/github_apk.py`'s `DIRECT_REPOS`), which is faster and doesn't need a browser at all.
 
 ## Adding a New App
 
 1. Add an entry to `APPS_CONFIG` in `core/config.py` (package name, patch source(s), CPU arch, icon URL; `exclude`/`enable`/`force_version`/`force_build` as needed — see the existing entries).
 2. Add its key to `PROCESS_ORDER`.
-3. If it downloads via APKMirror, add it to `APKMIRROR_APPS` and give it an entry in `core/sources/apkmirror.py`'s `APP_SITES` (the org/app slug APKMirror uses in its URLs). Otherwise, add it to `core/sources/github_apk.py`'s `APP_TAGS` or `DIRECT_REPOS`.
+3. If it downloads via APKMirror, add it to `APKMIRROR_APPS` and give it an entry in `core/sources/apkmirror.py`'s `APP_SITES` (the org/app slug APKMirror uses in its URLs). Otherwise, add it to `core/sources/github_apk.py`'s `DIRECT_REPOS`.
 4. Add it to the `matrix.app` list in `.github/workflows/patch.yml`.
-5. `python -c "from core.validate import validate_config; validate_config()"` catches most config mistakes (missing `PROCESS_ORDER`/`APKMIRROR_APPS`/`APP_SITES`/`APP_TAGS` entries) before you push.
+5. `python -c "from core.validate import validate_config; validate_config()"` catches most config mistakes (missing `PROCESS_ORDER`/`APKMIRROR_APPS`/`APP_SITES`/`DIRECT_REPOS` entries) before you push.
 6. Run it once — it will fail on purpose with a pending-signature message. Follow [First run: pending signatures](#4-first-run-pending-signatures) to pin its certificate, then run again.
 
 ## Project Structure
@@ -184,7 +184,7 @@ Each row is one entry in `core/config.py`'s `PROCESS_ORDER` — the key used for
 | File | Purpose |
 |---|---|
 | `apkmirror.py` | Downloads apps from apkmirror.com using a real, fingerprint-resistant Firefox (Camoufox) — launched once and reused across apps. Resolves an app + version to the right APKMirror URL (`APP_SITES` holds each app's org/slug), handles Cloudflare challenge pages and rate-limit cooldowns, navigates the variant/download-confirm page flow, and downloads the file. Clicking is done by reading the download button's own `href` and navigating there directly (`page.goto`) rather than simulating a mouse click, which sidesteps both deceptive ad overlays and layout quirks that a real click can be fooled by. Ad blocking is left enabled (Camoufox's bundled uBlock Origin, with its default ad/privacy filter set) rather than disabled, since it's what keeps those ad overlays from rendering in the first place. |
-| `github_apk.py` | Downloads apps that are mirrored as a direct GitHub release asset instead — `APP_TAGS`/`DIRECT_REPOS` map an app to the repo to pull from. Plain HTTP via `core/http.py`, no browser involved. |
+| `github_apk.py` | Downloads apps that are mirrored as a direct GitHub release asset instead — `DIRECT_REPOS` maps an app to the repo to pull from. Plain HTTP via `core/http.py`, no browser involved. |
 
 ### `.github/workflows/`
 

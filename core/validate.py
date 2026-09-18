@@ -40,10 +40,10 @@ def validate_config() -> None:
                     f"but has no entry in apkmirror.APP_SITES."
                 )
         else:
-            if name not in github_apk.APP_TAGS and name not in github_apk.DIRECT_REPOS:
+            if name not in github_apk.DIRECT_REPOS:
                 problems.append(
                     f'APPS_CONFIG["{app_key}"].name = "{name}" is not in APKMIRROR_APPS, and is also '
-                    f"missing from sources/github_apk.py's APP_TAGS / DIRECT_REPOS - main.py would have no "
+                    f"missing from sources/github_apk.py's DIRECT_REPOS - main.py would have no "
                     f"way to download it."
                 )
 
