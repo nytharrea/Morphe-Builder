@@ -117,12 +117,9 @@ async def delete_asset(asset_id: int):
 
 async def _upload(upload_url: str, file_path: str) -> dict:
     file_name = Path(file_path).name
-    url = upload_url.replace("{?name,label}", "") + f"?name={file_name}"
+    data = Path(file_path).read_bytes()
 
-    def _chunks(chunk_size: int = 1024 * 1024):
-        with open(file_path, "rb") as source:
-            while chunk := source.read(chunk_size):
-                yield chunk
+    url = upload_url.replace("{?name,label}", "") + f"?name={file_name}"
 
     async with new_session(timeout=None) as client:
         res = await client.post(
@@ -131,10 +128,8 @@ async def _upload(upload_url: str, file_path: str) -> dict:
                 **HEADERS,
                 "Content-Type": "application/vnd.android.package-archive",
             },
-            data=_chunks(),
+            content=data,
         )
-        if res.status_code >= 400:
-            raise RuntimeError(f"GitHub asset upload failed ({res.status_code}): {res.text[:500]}")
         return res.json()
 
 

@@ -18,7 +18,7 @@ A GitHub Actions pipeline that downloads Android APKs, patches them (ReVanced-st
 
 One workflow, `.github/workflows/patch.yml`, runs as four jobs:
 
-1. **`prepare`** — installs dependencies, installs the pinned dependencies, computes a release tag/name for this run (`prepare_release.py`), without mutating the repository.
+1. **`prepare`** — installs dependencies, freezes `requirements-lock.txt`, computes a release tag/name for this run (`prepare_release.py`), and pushes the lockfile if it changed.
 2. **`patch`** — a matrix job, one runner per app (see [Supported Apps](#supported-apps)), running in parallel. Each runner downloads that app's original APK (from APKMirror, via a [FlareSolverr](https://github.com/FlareSolverr/FlareSolverr) sidecar container that clears its Cloudflare challenge, or directly from a GitHub release), verifies its signing certificate against a pinned fingerprint, patches it with the matching patch bundle, re-signs it with your keystore, and uploads it as a build artifact.
 3. **`finalize`** — downloads every artifact the matrix produced, matches each file back to its app, builds one release description (with per-app version numbers and collapsible patch-source changelogs), creates a single GitHub Release with every APK attached, uploads MicroG/PotHelper companions if YouTube or YT Music was patched, deletes older releases, and sends a Discord/Telegram/Apprise notification.
 4. **`cleanup`** — deletes old workflow runs to keep the Actions tab tidy.
@@ -29,7 +29,7 @@ A **separate** workflow, `.github/workflows/lint.yml`, runs `ruff`, `mypy`, and 
 
 ## Setup
 
-### 1. Fork or use this repository
+### 1. Fork or use this repo
 
 Push it to your own GitHub account/org — the workflow needs write access to create releases and commit signature records.
 
@@ -255,7 +255,3 @@ Every environment variable `core/settings.py` reads (matched case-insensitively)
 | `ARTIFACTS_DIR` | `finalize_release.py` | Where downloaded artifacts land; the workflow sets this to `artifacts`. |
 | `NO_COLOR` | `core/log.py` | Set (to anything, including empty) to disable colored console output, per the [no-color.org](https://no-color.org) convention. |
 | `GITHUB_ACTIONS` | `core/log.py` | Set automatically by Actions; switches on GitHub Actions annotation output for warnings/errors. |
-
-## License
-
-This project is released under the MIT License. Review the configured patch sources and APK redistribution rights before publishing builds.

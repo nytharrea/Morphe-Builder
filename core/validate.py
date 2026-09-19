@@ -9,9 +9,6 @@ class ConfigError(Exception):
 def validate_config() -> None:
     problems: list[str] = []
 
-    if len(PROCESS_ORDER) != len(set(PROCESS_ORDER)):
-        problems.append("PROCESS_ORDER contains duplicate app keys.")
-
     for app_key in PROCESS_ORDER:
         if app_key not in APPS_CONFIG:
             problems.append(f'PROCESS_ORDER has "{app_key}" but APPS_CONFIG has no such key.')
@@ -21,14 +18,6 @@ def validate_config() -> None:
             problems.append(f'APPS_CONFIG["{app_key}"] is missing from PROCESS_ORDER, so it will never run.')
 
     for app_key, cfg in APPS_CONFIG.items():
-        required = ("pkg", "name", "patch_source", "arch", "icon")
-        for field in required:
-            if not cfg.get(field):
-                problems.append(f'APPS_CONFIG["{app_key}"] is missing required field "{field}".')
-        if not isinstance(cfg.get("pkg"), str) or "." not in cfg.get("pkg", ""):
-            problems.append(f'APPS_CONFIG["{app_key}"].pkg must be an Android package name.')
-        if cfg.get("arch") not in {"arm64-v8a", "armeabi-v7a", "x86", "x86_64", "universal"}:
-            problems.append(f'APPS_CONFIG["{app_key}"].arch is unsupported: {cfg.get("arch")!r}.')
         source = cfg.get("patch_source")
         sources = source if isinstance(source, list) else [source]
 

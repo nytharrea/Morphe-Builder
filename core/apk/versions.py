@@ -1,7 +1,7 @@
 import re
 
 
-def extract_versions(output: str) -> list[dict]:
+def extract_youtube_versions(output: str) -> list[dict]:
     results = []
     lines = output.split("\n")
     in_section = False

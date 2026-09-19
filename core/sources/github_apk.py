@@ -4,9 +4,11 @@ from curl_cffi.requests import AsyncSession
 
 from .. import log
 from ..http import new_session
+from ..settings import settings
 
 _GH_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Python)",
+    "Authorization": f"Bearer {settings.github_token.get_secret_value()}",
 }
 
 DIRECT_REPOS = {
