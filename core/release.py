@@ -78,15 +78,14 @@ async def delete_tag(tag: str) -> None:
 
 
 async def delete_other_releases(keep_release_id: int) -> None:
-    releases = [r for r in await list_releases() if r["id"] != keep_release_id]
+    releases = await list_releases()
 
-    async def _delete(release: dict) -> None:
+    for release in releases:
+        if release["id"] == keep_release_id:
+            continue
         log.warn(f"Deleting old release: {release.get('tag_name')}")
         await delete_release(release["id"])
         await delete_tag(release["tag_name"])
-
-    # Silmeler birbirinden bagimsiz: paralel sil
-    await asyncio.gather(*(_delete(r) for r in releases))
 
 
 async def update_release_body(release_id: int, body: str) -> dict:
@@ -153,6 +152,17 @@ async def upload_patched_apk(release: dict, apk_path: str):
     await upload_with_replace(release, apk_path)
 
 
+async def upload_patched_apks(release: dict, apk_paths: list[str]) -> None:
+    _assert_configured()
+    semaphore = asyncio.Semaphore(settings.upload_concurrency)
+
+    async def _upload_one(path: str) -> None:
+        async with semaphore:
+            await upload_with_replace(release, path)
+
+    await asyncio.gather(*(_upload_one(path) for path in apk_paths))
+
+
 async def _fetch_and_upload_companion(
     release: dict, owner: str, repo: str, match: Callable[[str], bool], base_name: str
 ) -> None:
@@ -180,19 +190,21 @@ async def upload_microg_once(release: dict):
     _assert_configured()
 
     log.step("Fetching MicroG...")
-    await _fetch_and_upload_companion(
-        release,
-        "MorpheApp",
-        "MicroG-RE",
-        lambda n: n.endswith("-arm64-v8a.apk") and "noicon" not in n.lower(),
-        "MicroG.apk",
-    )
-    await _fetch_and_upload_companion(
-        release,
-        "MorpheApp",
-        "MicroG-RE",
-        lambda n: n.endswith("-noicon-arm64-v8a.apk"),
-        "MicroG-NoIcon.apk",
+    await asyncio.gather(
+        _fetch_and_upload_companion(
+            release,
+            "MorpheApp",
+            "MicroG-RE",
+            lambda n: n.endswith("-arm64-v8a.apk") and "noicon" not in n.lower(),
+            "MicroG.apk",
+        ),
+        _fetch_and_upload_companion(
+            release,
+            "MorpheApp",
+            "MicroG-RE",
+            lambda n: n.endswith("-noicon-arm64-v8a.apk"),
+            "MicroG-NoIcon.apk",
+        ),
     )
 
 

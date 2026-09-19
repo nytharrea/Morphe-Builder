@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     ks_alias: str | None = None
     key_password: SecretStr | None = None
 
+    flaresolverr_url: str = "http://localhost:8191/v1"
+    flaresolverr_timeout: float = 60.0
+
     skip_signature_verify: bool = False
     known_signatures_path: Path = Field(default_factory=lambda: Path.cwd() / "data" / "known_signatures.json")
     pending_signatures_path: Path = Field(default_factory=lambda: Path.cwd() / "data" / "pending_signatures.json")
@@ -51,14 +54,10 @@ class Settings(BaseSettings):
     no_color: str | None = None
     github_actions: bool = False
 
-    flaresolverr_url: str = "http://localhost:8191"
-    flaresolverr_session: str = "morphe"
-    flaresolverr_max_timeout_ms: int = 120_000
-    apkmirror_base_url: str = "https://www.apkmirror.com"
-
     release_tag: str | None = None
     release_name: str | None = None
     artifacts_dir: Path = Path("artifacts")
+    upload_concurrency: int = 6
 
 
 settings = Settings()

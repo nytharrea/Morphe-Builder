@@ -12,7 +12,6 @@ for _name, _color, _icon in [
     ("STEP", "<cyan>", "🔧"),
     ("DOWNLOAD", "<magenta>", "📦"),
     ("SEARCH", "<blue>", "🔍"),
-    ("LINK", "<bold><blue>", "🔗"),
     ("BROWSER", "<blue>", "🌐"),
     ("PATCH", "<cyan>", "🩹"),
     ("LOCK", "<blue>", "🔐"),
@@ -31,8 +30,6 @@ logger.level("ERROR", color="<bold><red>", icon="❌")
 
 
 def _format(record) -> str:
-    if "url" in record["extra"]:
-        return "<level>{level.icon}  {message}: <magenta>{extra[url]}</magenta></level>\n{exception}"
     if record["level"].name == "HEADER":
         return "\n<level>{level.icon} {message}</level>\n{exception}"
     return "<level>{level.icon}  {message}</level>\n{exception}"
@@ -81,11 +78,6 @@ def download(msg: str) -> None:
 
 def search(msg: str) -> None:
     logger.log("SEARCH", msg)
-
-
-def link(url: str) -> None:
-    """Baglanti/dosya URL'lerini mor (magenta) olarak yazdirir."""
-    logger.bind(url=url).log("LINK", "İndirme linki")
 
 
 def browser(msg: str) -> None:

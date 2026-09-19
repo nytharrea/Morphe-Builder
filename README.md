@@ -19,7 +19,7 @@ A GitHub Actions pipeline that downloads Android APKs, patches them (ReVanced-st
 One workflow, `.github/workflows/patch.yml`, runs as four jobs:
 
 1. **`prepare`** — installs dependencies, freezes `requirements-lock.txt`, computes a release tag/name for this run (`prepare_release.py`), and pushes the lockfile if it changed.
-2. **`patch`** — a matrix job, one runner per app (see [Supported Apps](#supported-apps)), running in parallel. Each runner downloads that app's original APK (from APKMirror via a real, fingerprint-resistant Firefox browser, or directly from a GitHub release), verifies its signing certificate against a pinned fingerprint, patches it with the matching patch bundle, re-signs it with your keystore, and uploads it as a build artifact.
+2. **`patch`** — a matrix job, one runner per app (see [Supported Apps](#supported-apps)), running in parallel. Each runner downloads that app's original APK (from APKMirror, via a [FlareSolverr](https://github.com/FlareSolverr/FlareSolverr) sidecar container that clears its Cloudflare challenge, or directly from a GitHub release), verifies its signing certificate against a pinned fingerprint, patches it with the matching patch bundle, re-signs it with your keystore, and uploads it as a build artifact.
 3. **`finalize`** — downloads every artifact the matrix produced, matches each file back to its app, builds one release description (with per-app version numbers and collapsible patch-source changelogs), creates a single GitHub Release with every APK attached, uploads MicroG/PotHelper companions if YouTube or YT Music was patched, deletes older releases, and sends a Discord/Telegram/Apprise notification.
 4. **`cleanup`** — deletes old workflow runs to keep the Actions tab tidy.
 
@@ -120,13 +120,16 @@ Each row is one entry in `core/config.py`'s `PROCESS_ORDER` — the key used for
 | `reddit-adobo` | `com.reddit.frontpage` | APKMirror | 🥘 Adobo |
 | `twitter` | `com.twitter.android` | APKMirror | ✖️ Piko |
 | `twitter-x` | `com.twitter.android` | APKMirror | 🆕 Piko NewX, 🟢 Morphe |
-| `instagram` | `com.instagram.android` | GitHub | ✖️ Piko |
+| `instagram` | `com.instagram.android` | APKMirror | ✖️ Piko |
 | `gboard` | `com.google.android.inputmethod.latin` | APKMirror | ⌨️ JasonWu Gboard |
-| `speedtest` | `org.zwanoo.android.speedtest` | GitHub | ⚡ Rushiranpise, 🟢 Morphe |
+| `speedtest` | `org.zwanoo.android.speedtest` | APKMirror | ⚡ Rushiranpise, 🟢 Morphe |
 | `brave` | `com.brave.browser` | APKMirror | 🦁 dh6k |
 | `proton-vpn` | `ch.protonvpn.android` | APKMirror | 🍃 hoo-dles |
 | `tiktok` | `com.zhiliaoapp.musically` | APKMirror | 🎵 TikTok Patches, 🟢 Morphe |
 | `tiktok-hxreborn` | `com.zhiliaoapp.musically` | APKMirror | 🔥 hxreborn TikTok, 🟢 Morphe |
+| `tiktok-bluedragon` | `com.zhiliaoapp.musically` | APKMirror | 🔷 BlueIT Service, 🟢 Morphe |
+| `tiktok-hushfeed` | `com.zhiliaoapp.musically` | APKMirror | 🤫 Hushfeed, 🟢 Morphe |
+| `tiktok-kveld` | `com.zhiliaoapp.musically` | APKMirror | 🌙 Kveld, 🟢 Morphe |
 | `warp` | `com.cloudflare.onedotonedotonedotone` | APKMirror | ⚡ Rushiranpise |
 | `inshot` | `com.camerasideas.instashot` | APKMirror | 🎬 Hooman's Patches |
 | `google-photos` | `com.google.android.apps.photos` | APKMirror | ⚡ Rushiranpise |
@@ -135,7 +138,7 @@ Each row is one entry in `core/config.py`'s `PROCESS_ORDER` — the key used for
 | `proton-pass` | `proton.android.pass` | APKMirror | ⚡ Rushiranpise |
 | `notesnook` | `com.streetwriters.notesnook` | APKMirror | 🔥 hxreborn |
 
-"APKMirror" means the app is scraped from apkmirror.com through a real (Camoufox-driven) Firefox browser; "GitHub" means it's downloaded directly from a GitHub release (`core/sources/github_apk.py`'s `DIRECT_REPOS`), which is faster and doesn't need a browser at all.
+"APKMirror" means the app is scraped from apkmirror.com through a [FlareSolverr](https://github.com/FlareSolverr/FlareSolverr) sidecar container that clears its Cloudflare challenge; "GitHub" means it's downloaded directly from a GitHub release (`core/sources/github_apk.py`'s `DIRECT_REPOS`), which is faster and doesn't need FlareSolverr at all.
 
 ## Adding a New App
 
@@ -183,8 +186,9 @@ Each row is one entry in `core/config.py`'s `PROCESS_ORDER` — the key used for
 
 | File | Purpose |
 |---|---|
-| `apkmirror.py` | Downloads apps from apkmirror.com using a real, fingerprint-resistant Firefox (Camoufox) — launched once and reused across apps. Resolves an app + version to the right APKMirror URL (`APP_SITES` holds each app's org/slug), handles Cloudflare challenge pages and rate-limit cooldowns, navigates the variant/download-confirm page flow, and downloads the file. Clicking is done by reading the download button's own `href` and navigating there directly (`page.goto`) rather than simulating a mouse click, which sidesteps both deceptive ad overlays and layout quirks that a real click can be fooled by. Ad blocking is left enabled (Camoufox's bundled uBlock Origin, with its default ad/privacy filter set) rather than disabled, since it's what keeps those ad overlays from rendering in the first place. |
-| `github_apk.py` | Downloads apps that are mirrored as a direct GitHub release asset instead — `DIRECT_REPOS` maps an app to the repo to pull from. Plain HTTP via `core/http.py`, no browser involved. |
+| `apkmirror.py` | Downloads apps from apkmirror.com. Resolves an app + version to the right APKMirror URL (`APP_SITES` holds each app's org/slug), fetches each page through `flaresolverr.py`, parses the returned HTML (`lxml`) to pick the right variant row (architecture/DPI priority, with a bundle-only special case for apps like Instagram that APKMirror only ships as a split `.apkm`), handles Cloudflare challenge pages and rate-limit cooldowns, follows the download-button → confirm-page → final-file hop by reading each page's link `href` directly rather than clicking anything, and streams the file to disk. |
+| `flaresolverr.py` | Talks to a local [FlareSolverr](https://github.com/FlareSolverr/FlareSolverr) instance (the `patch` job runs it as a `services:` sidecar container, `localhost:8191`) over its HTTP API: creates one browser session and reuses it for every request in the run, hands back each cleared page's HTML/cookies/user-agent, and streams the actual `.apk`/`.apkm` file afterwards with a plain HTTP client replaying those cookies — FlareSolverr itself can only return page content, not a binary download. |
+| `github_apk.py` | Downloads apps that are mirrored as a direct GitHub release asset instead — `DIRECT_REPOS` maps an app to the repo to pull from. Plain HTTP via `core/http.py`, no browser or FlareSolverr involved. |
 
 ### `.github/workflows/`
 
@@ -209,7 +213,7 @@ Each row is one entry in `core/config.py`'s `PROCESS_ORDER` — the key used for
 | `requirements.txt` | Direct, unpinned dependencies. |
 | `requirements-dev.txt` | The above plus `pytest`, `pytest-asyncio`, `ruff`, `mypy`. |
 | `requirements-lock.txt` | Full pinned dependency tree (`pip freeze`), regenerated and committed automatically by the `prepare` job on every run. |
-| `tests/` | `pytest` unit tests for `core/retry.py`, `core/validate.py`, `core/apk/versions.py`, and `finalize_release.py`'s asset-matching logic. |
+| `tests/` | `pytest` unit tests for `core/retry.py`, `core/validate.py`, `core/apk/versions.py`, `core/sources/apkmirror.py`'s HTML-parsing/selection logic, and `finalize_release.py`'s asset-matching logic. |
 | `.gitignore` | Excludes `__pycache__`, virtualenvs, downloaded APKs, `.env` files, and `diagnostics/`. |
 
 ## CI (Lint & Test)
@@ -231,9 +235,12 @@ Every environment variable `core/settings.py` reads (matched case-insensitively)
 
 | Variable | Used by | Notes |
 |---|---|---|
-| `GITHUB_TOKEN` | `finalize_release.py`, `core/release.py`, `commit_signature.py`'s git push, `camoufox fetch` | Provided automatically by Actions (`secrets.GITHUB_TOKEN`); also passed to the Camoufox fetch step specifically to raise its GitHub API rate limit from 60/hour (unauthenticated) to 5,000/hour. |
+| `GITHUB_TOKEN` | `finalize_release.py`, `core/release.py`, `commit_signature.py`'s git push, `core/sources/github_apk.py` | Provided automatically by Actions (`secrets.GITHUB_TOKEN`). |
 | `GITHUB_REPOSITORY` | `core/release.py` | `owner/repo`, set automatically by Actions as `github.repository`. |
 | `TARGET_APP` | `main.py` | An app key to process just that one app; `all` (default) processes every key in `PROCESS_ORDER`. The `patch` job sets this to `matrix.app`. |
+| `FLARESOLVERR_URL` | `core/sources/flaresolverr.py` | The FlareSolverr instance's API endpoint. Defaults to `http://localhost:8191/v1`, matching the `patch` job's `services:` sidecar container — only override for local runs against a differently-hosted instance. |
+| `FLARESOLVERR_TIMEOUT` | `core/sources/flaresolverr.py` | Seconds to let FlareSolverr spend clearing a single page (its own `maxTimeout`). Defaults to `60`. |
+| `UPLOAD_CONCURRENCY` | `core/release.py` | How many release assets `finalize_release.py` uploads to GitHub at once, instead of one at a time. Defaults to `6`. |
 | `KS_PATH` | `core/apk/patcher.py` | Path to the decoded keystore file; the workflow sets this to `Panemi.keystore` (where the "Setup Keystore" step decodes `KEYSTORE_BASE64` to). |
 | `KS_PASSWORD` | `core/apk/patcher.py` | From the `KEYSTORE_PASSWORD` secret. |
 | `KS_ALIAS` | `core/apk/patcher.py` | From the `KEY_ALIAS` secret. |
@@ -247,18 +254,3 @@ Every environment variable `core/settings.py` reads (matched case-insensitively)
 | `ARTIFACTS_DIR` | `finalize_release.py` | Where downloaded artifacts land; the workflow sets this to `artifacts`. |
 | `NO_COLOR` | `core/log.py` | Set (to anything, including empty) to disable colored console output, per the [no-color.org](https://no-color.org) convention. |
 | `GITHUB_ACTIONS` | `core/log.py` | Set automatically by Actions; switches on GitHub Actions annotation output for warnings/errors. |
-
----
-
-## FlareSolverr gecisi (v3.5.2)
-
-- Camoufox + Playwright kaldirildi. Cloudflare challenge cozumu icin
-  [FlareSolverr](https://github.com/FlareSolverr/FlareSolverr) v3.5.2
-  workflow'da servis konteyneri olarak calisir (`ghcr.io/flaresolverr/flaresolverr:v3.5.2`).
-- APKMirror istemcisi (`core/sources/apkmirror.py`) artik duz HTTP
-  (curl_cffi) kullanir; challenge'da `core/flaresolverr.py` uzerinden
-  cf_clearance cozulur.
-- Termius artik patchlenmiyor.
-- Instagram ve Speedtest artik GitHub yerine APKMirror'dan cekiliyor.
-- FlareSolverrSharp (v3.0.8) .NET kutuphanesidir; Python tarafinda
-  bağımlılık gerektirmez.

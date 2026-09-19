@@ -5,7 +5,7 @@ on:
 
 jobs:
   prepare:
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-latest
     timeout-minutes: 15
 
     permissions:
@@ -51,18 +51,8 @@ jobs:
 
   patch:
     needs: prepare
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-latest
     timeout-minutes: 25
-
-    # FlareSolverr v3.5.2 servisi (Camoufox/Playwright yerine)
-    services:
-      flaresolverr:
-        image: ghcr.io/flaresolverr/flaresolverr:v3.5.2
-        env:
-          LOG_LEVEL: info
-          TZ: UTC
-        ports:
-          - 8191:8191
 
     permissions:
       contents: write
@@ -101,6 +91,20 @@ jobs:
           - notesnook
           - fairemail
 
+    services:
+      flaresolverr:
+        image: ghcr.io/flaresolverr/flaresolverr:v3.5.2
+        ports:
+          - 8191:8191
+        env:
+          LOG_LEVEL: info
+        options: >-
+          --health-cmd "curl -f http://localhost:8191/health || exit 1"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+          --health-start-period 15s
+
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -111,7 +115,7 @@ jobs:
       - name: Show runner IP
         run: curl -s --max-time 10 https://api.ipify.org || true
 
-      - name: Jitter delay before browser starts
+      - name: Jitter delay before hitting APKMirror
         run: |
           delay=$(( RANDOM % 25 ))
           echo "Sleeping ${delay}s to avoid every matrix job hitting APKMirror in the same instant"
@@ -133,32 +137,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-lock.txt
 
-      - name: Wait for FlareSolverr to be ready
-        run: |
-          for i in $(seq 1 60); do
-            response=$(curl -sS -X POST http://localhost:8191/v1 \
-                 -H 'Content-Type: application/json' \
-                 -d '{"cmd":"sessions.create","session":"gha-healthcheck"}' 2>&1)
-            if printf '%s' "$response" | grep -q '"status"' && printf '%s' "$response" | grep -q '"ok"'; then
-              echo "FlareSolverr is ready: $response"
-              curl -s -X POST http://localhost:8191/v1 \
-                 -H 'Content-Type: application/json' \
-                 -d '{"cmd":"sessions.destroy","session":"gha-healthcheck"}' || true
-              exit 0
-            fi
-            if [ "$i" -eq 1 ] || [ $((i % 10)) -eq 0 ]; then
-              echo "FlareSolverr bekleniyor... ($i) son yanit: $response"
-            fi
-            sleep 2
-          done
-          echo "::error::FlareSolverr 120 saniye icinde hazir olmadi"
-          echo "=== calisan konteynerler ==="
-          docker ps -a || true
-          echo "=== FlareSolverr konteyner loglari ==="
-          container=$(docker ps -aq --filter ancestor=ghcr.io/flaresolverr/flaresolverr:v3.5.2 | head -1)
-          [ -n "$container" ] && docker logs "$container" || echo "konteyner bulunamadi"
-          exit 1
-
       - name: Setup Keystore
         run: |
           echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > Panemi.keystore
@@ -174,7 +152,10 @@ jobs:
           KS_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KS_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-          FLARESOLVERR_URL: "http://localhost:8191"
+
+      - name: Show FlareSolverr logs
+        if: failure()
+        run: docker logs "$(docker ps -aq --filter ancestor=ghcr.io/flaresolverr/flaresolverr:v3.5.2)" 2>&1 | tail -200 || true
 
       - name: Upload patched APK artifact
         if: always()
@@ -184,6 +165,15 @@ jobs:
           path: dist/*.apk
           if-no-files-found: ignore
           retention-days: 1
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: diagnostics-${{ matrix.app }}-${{ github.run_id }}
+          path: diagnostics/
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Commit updated signature files
         if: always()
@@ -200,7 +190,7 @@ jobs:
   finalize:
     needs: [prepare, patch]
     if: always()
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-latest
     timeout-minutes: 10
 
     permissions:
@@ -245,7 +235,7 @@ jobs:
   cleanup:
     needs: finalize
     if: always()
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-latest
     permissions:
       actions: write
     steps:

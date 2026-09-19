@@ -32,7 +32,6 @@ DISPLAY_NAMES: dict[str, str] = {
     "tiktok-bluedragon": "TikTok",
     "tiktok-hushfeed": "TikTok",
     "tiktok-kveld": "TikTok",
-    "fairemail": "FairEmail",
     "warp": "1.1.1.1",
     "inshot": "InShot",
     "google-photos": "Google Photos",
@@ -41,6 +40,7 @@ DISPLAY_NAMES: dict[str, str] = {
     "proton-pass": "Proton Pass",
     "notesnook": "Notesnook",
     "twitter-x": "Twitter-X",
+    "fairemail": "FairEmail",
 }
 
 APKMIRROR_APPS: list[str] = [
@@ -127,7 +127,6 @@ APPS_CONFIG: dict[str, AppConfig] = {
         "name": "gboard",
         "patch_source": "jasonwu",
         "arch": "arm64-v8a",
-        "force_version": "18.0.3.954559732",
         "icon": "https://cdn.simpleicons.org/google/4285F4",
         "exclude": [
             "Zhuyin Bottom Row Key Sizes",
@@ -185,8 +184,9 @@ APPS_CONFIG: dict[str, AppConfig] = {
     "tiktok-bluedragon": {
         "pkg": "com.zhiliaoapp.musically",
         "name": "tiktok",
-        "patch_source": ["bluedragon"],
+        "patch_source": ["bluedragon-tiktok", "morphe"],
         "arch": "arm64-v8a",
+        "force_version": "46.4.3",
         "icon": "https://cdn.simpleicons.org/tiktok",
         "exclude": [],
         "enable": ["Disable Play Store updates"],
@@ -194,8 +194,9 @@ APPS_CONFIG: dict[str, AppConfig] = {
     "tiktok-hushfeed": {
         "pkg": "com.zhiliaoapp.musically",
         "name": "tiktok",
-        "patch_source": ["hushfeed"],
+        "patch_source": ["hushfeed", "morphe"],
         "arch": "arm64-v8a",
+        "force_version": "46.2.3",
         "icon": "https://cdn.simpleicons.org/tiktok",
         "exclude": [],
         "enable": ["Disable Play Store updates"],
@@ -203,19 +204,12 @@ APPS_CONFIG: dict[str, AppConfig] = {
     "tiktok-kveld": {
         "pkg": "com.zhiliaoapp.musically",
         "name": "tiktok",
-        "patch_source": ["kveld"],
+        "patch_source": ["kveld-tiktok", "morphe"],
         "arch": "arm64-v8a",
+        "force_version": "46.9.3",
         "icon": "https://cdn.simpleicons.org/tiktok",
         "exclude": [],
         "enable": ["Disable Play Store updates"],
-    },
-    "fairemail": {
-        "pkg": "eu.faircode.email",
-        "name": "fairemail",
-        "patch_source": ["heval"],
-        "arch": "arm64-v8a",
-        "icon": "https://www.google.com/s2/favicons?sz=128&domain=email.faircode.eu",
-        "exclude": [],
     },
     "warp": {
         "pkg": "com.cloudflare.onedotonedotonedotone",
@@ -281,6 +275,14 @@ APPS_CONFIG: dict[str, AppConfig] = {
         "icon": "https://www.google.com/s2/favicons?sz=128&domain=notesnook.com",
         "exclude": [],
     },
+    "fairemail": {
+        "pkg": "eu.faircode.email",
+        "name": "fairemail",
+        "patch_source": "heval",
+        "arch": "arm64-v8a",
+        "icon": "https://www.google.com/s2/favicons?sz=128&domain=email.faircode.eu",
+        "exclude": [],
+    },
 }
 
 PROCESS_ORDER: list[str] = [
@@ -323,10 +325,10 @@ PATCH_SOURCES: dict[str, tuple[str, str, str]] = {
     "jasonwu": ("jasonwu1994", "Gboard-patches", "⌨️ JasonWu Gboard"),
     "hxreborn": ("hxreborn", "morphe-patches", "🔥 hxreborn"),
     "hxreborn-tiktok": ("hxreborn", "hxreborn-tiktok-patches", "🔥 hxreborn TikTok"),
-    "bluedragon": ("BlueDragon4251", "tiktok-patches-for-morphe", "🐉 BlueDragon"),
-    "hushfeed": ("SysAdminDoc", "hushfeed", "📰 Hushfeed"),
-    "kveld": ("kveld9", "kveld-morphe-patches", "⚡ Kveld"),
-    "heval": ("heval99", "Heval-Morphe-Patches", "🟣 Heval"),
+    "bluedragon-tiktok": ("BlueDragon4251", "tiktok-patches-for-morphe", "🔷 BlueIT Service"),
+    "hushfeed": ("SysAdminDoc", "hushfeed", "🤫 Hushfeed"),
+    "kveld-tiktok": ("kveld9", "kveld-morphe-patches", "🌙 Kveld"),
+    "heval": ("heval99", "Heval-Morphe", "🧩 Heval"),
 }
 
 

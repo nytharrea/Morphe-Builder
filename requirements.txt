@@ -1,10 +1,8 @@
-# FlareSolverr (v3.5.2) ayri bir servis olarak calisir (workflow'da konteyner).
-# FlareSolverrSharp (v3.0.8) bir .NET kutuphanesidir; bu Python projesinde gerekmez.
 curl_cffi
+lxml
 tenacity
 loguru
 androguard
 cryptography
 apprise
 pydantic-settings
-selectolax

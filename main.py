@@ -16,7 +16,6 @@ from core.config import (
     get_release_naming,
     patch_sources_for,
 )
-from core.flaresolverr import FlareSolverrClient  # noqa: F401 (FlareSolverr altyapisi etkin)
 from core.patch_tools import download_latest_github_asset
 from core.settings import settings
 from core.sources import apkmirror, github_apk
@@ -177,7 +176,7 @@ async def main():
         log.error(f"Fatal error: {err}")
         raise SystemExit(1) from err
     finally:
-        await apkmirror.close_browser()
+        await apkmirror.close_session()
 
 
 if __name__ == "__main__":

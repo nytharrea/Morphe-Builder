@@ -1,28 +1,18 @@
-"""APKMirror indirme kaynagi - FlareSolverr + duz HTTP.
-
-Eski Camoufox/Playwright tarayici kaldirildi. Akis:
-1. curl_cffi (firefox impersonation) ile sayfa istenir.
-2. Cloudflare challenge gorulurse FlareSolverr cozer; cf_clearance cerezi
-   ve user-agent mevcut HTTP oturumuna islenir.
-3. Tum gezinme selectolax ile HTML parse edilir (JS evaluate yok).
-"""
-
 import asyncio
-import random
 import re
 import time
 from pathlib import Path
 from urllib.parse import urljoin
 
-from selectolax.parser import HTMLParser
-from tenacity import retry, stop_after_attempt
+import lxml.html
+from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt
+from tenacity.stop import stop_base
+from tenacity.wait import wait_base
 
 from .. import log
-from .. import retry as retry_conf
 from ..apk.versions import to_apkmirror_version
-from ..flaresolverr import FlareSolverrClient
-from ..http import new_session
-from ..settings import settings
+from . import flaresolverr
+from .flaresolverr import Cleared, FlareSolverrError
 
 APP_SITES = {
     "youtube": {"org": "google-inc", "slug": "youtube"},
@@ -61,22 +51,22 @@ APP_SITES = {
         "slug": "fairemail-open-source-privacy-oriented-email",
         "release_slug": "fairemail-privacy-aware-email",
     },
-    # NOT: termius kaldirildi (artik patchlenmiyor).
 }
 
-_FILENAME_RE = re.compile("filename=([^;]+)", re.IGNORECASE)
+DIAGNOSTICS_DIR = Path(__file__).resolve().parent.parent.parent / "diagnostics"
 
+RESOLVE_BUDGET_SECONDS = 300.0
 
-def _filename_from_disposition(header: str):
-    """Content-Disposition header'indan dosya adini cikar."""
-    match = _FILENAME_RE.search(header)
-    if not match:
-        return None
-    value = match.group(1).strip().strip('"').strip("'")
-    return value or None
+_ALLOWED_ARCHS = [
+    "universal",
+    "evrensel",
+    "noarch",
+    "arm64-v8a",
+    "arm64-v8a + armeabi-v7a",
+    "arm64-v8a + armeabi",
+]
 
-
-_CHALLENGE_MARKERS = (
+_CHALLENGE_MARKERS = [
     "just a moment",
     "checking your browser",
     "attention required! | cloudflare",
@@ -86,358 +76,479 @@ _CHALLENGE_MARKERS = (
     "ddos protection by cloudflare",
     "performing security verification",
     "verifies you are not a bot",
-)
+]
 
-_VERSION_SLUG_RE = re.compile(r"-((?:\d+-)+(?:\d+[a-z0-9]*(?:-[a-z]+\.\d+)?))-release")
-_DOWNLOAD_HREF_RE = re.compile(r"\.apk(?:m)?(?:$|\?)|download\.php", re.IGNORECASE)
-
-
-def _looks_like_challenge(status_code: int, html: str) -> bool:
-    if status_code in (403, 503):
-        return True
-    head = html[:2000].lower()
-    return any(marker in head for marker in _CHALLENGE_MARKERS)
+_challenge_hits = 0
+_cooldown_until = 0.0
 
 
-def _page_is_404(tree: HTMLParser) -> bool:
-    title = tree.css_first("title")
-    if title is None:
-        return False
-    text = title.text().lower()
-    return "404" in text and ("not be found" in text or "whoops" in text)
+async def close_session() -> None:
+    await flaresolverr.close_session()
 
 
-class APKMirrorClient:
-    def __init__(self) -> None:
-        base = settings.apkmirror_base_url.rstrip("/")
-        self._base = base
-        self._http = new_session(follow_redirects=True, timeout=60)
-        self._http.headers["Referer"] = f"{base}/"
-        self._flaresolverr = FlareSolverrClient()
-        self._last_request = 0.0
+async def _apply_global_cooldown() -> None:
+    now = time.monotonic()
+    if now < _cooldown_until:
+        remaining = _cooldown_until - now
+        log.wait(f"Global cooldown active, waiting {remaining:.0f}s...")
+        await asyncio.sleep(remaining)
 
-    async def __aenter__(self) -> "APKMirrorClient":
-        await self._flaresolverr.start()
-        await self._prime_clearance()
-        return self
 
-    async def _prime_clearance(self) -> None:
-        """Kosunun basinda cf_clearance'i proaktif olarak coz.
+class _ChallengePresent(Exception):
+    """Raised internally when a fetched page is still a Cloudflare
+    challenge (or FlareSolverr couldn't clear it). Carries the escalated
+    cooldown so the wait/stop strategies below don't have to recompute
+    (and re-escalate) it themselves."""
 
-        Bazi kosularda APKMirror ilk sayfa isteklerinde challenge
-        gostermeden da ilerliyor, ancak onay (download) sayfasinda
-        birden korumaya giriyor. Clearance bastan alinirsa tim
-        istekler korunmus olur (eski Camoufox akisindaki gibi).
-        """
-        try:
-            await self._apply_clearance(f"{self._base}/")
-            log.info("APKMirror clearance (cf_clearance) alindi")
-        except Exception as e:
-            log.warn(f"Proaktif clearance alinamadi, gerektiginde tekrar denenecek: {e}")
+    def __init__(self, cooldown: float):
+        super().__init__("Cloudflare challenge page detected")
+        self.cooldown = cooldown
 
-    async def __aexit__(self, *exc) -> None:
-        await self.close()
 
-    async def close(self) -> None:
-        await self._flaresolverr.close()
+def _register_challenge() -> float:
+    global _challenge_hits, _cooldown_until
+    _challenge_hits += 1
+    cooldown = min(15.0 * (2 ** (_challenge_hits - 1)), 120.0)
+    _cooldown_until = time.monotonic() + cooldown
+    return cooldown
 
-    async def _throttle(self) -> None:
-        """APKMirror'i korumak icin istekler arasi minimum 2-4 sn."""
-        elapsed = time.monotonic() - self._last_request
-        wait = random.uniform(2.0, 4.0) - elapsed
-        if wait > 0:
-            await asyncio.sleep(wait)
 
-    async def _apply_clearance(self, url: str) -> None:
-        solution = await self._flaresolverr.solve_get(url)
-        ua = solution.get("userAgent")
-        if ua:
-            self._http.headers["User-Agent"] = ua
-        for cookie in solution["cookies"]:
-            domain = (cookie.get("domain") or ".apkmirror.com").lstrip(".")
-            self._http.cookies.set(cookie["name"], cookie["value"], domain=domain)
+class _ChallengeCooldownWait(wait_base):
+    def __call__(self, retry_state) -> float:
+        exc = retry_state.outcome.exception() if retry_state.outcome else None
+        return exc.cooldown if isinstance(exc, _ChallengePresent) else 0.0
 
-    @retry(
-        stop=stop_after_attempt(4),
-        wait=retry_conf.exponential_with_jitter(max=30.0),
-        before_sleep=retry_conf.before_sleep("APKMirror istegi"),
-        reraise=True,
-    )
-    async def get_html(self, url: str, *, referer: str | None = None) -> str:
-        await self._throttle()
-        headers = {"Referer": referer} if referer else {}
-        res = await self._http.get(url, headers=headers)
-        self._last_request = time.monotonic()
-        html = res.text
 
-        if _looks_like_challenge(res.status_code, html):
-            log.warn(f"Cloudflare challenge: {url}")
-            await self._apply_clearance(url)
-            await self._throttle()
-            res = await self._http.get(url, headers=headers)
-            self._last_request = time.monotonic()
-            html = res.text
-            if _looks_like_challenge(res.status_code, html):
-                raise RuntimeError(f"FlareSolverr sonrasi challenge devam ediyor: {url}")
+class _BudgetExceeded(stop_base):
+    def __init__(self, deadline: float | None):
+        self.deadline = deadline
 
-        if res.status_code == 404:
-            return html  # 404 sayfasi: arayan karar versin
-        if res.status_code >= 400:
-            raise RuntimeError(f"APKMirror HTTP {res.status_code}: {url}")
-        return html
+    def __call__(self, retry_state) -> bool:
+        if self.deadline is None or retry_state.outcome is None:
+            return False
+        exc = retry_state.outcome.exception()
+        cooldown = exc.cooldown if isinstance(exc, _ChallengePresent) else 0.0
+        return time.monotonic() + cooldown >= self.deadline
 
-    # ---------- surum cozumleme ----------
 
-    async def get_latest_listing(self, app_name: str) -> dict | None:
-        site = APP_SITES[app_name]
-        url = f"{self._base}/apk/{site['org']}/{site['slug']}/"
-        log.search(f"APKMirror liste sayfasi: {url}")
-        tree = HTMLParser(await self.get_html(url))
-        for anchor in tree.css("a[href*='-release/']"):
-            href = anchor.attributes.get("href") or ""
-            match = _VERSION_SLUG_RE.search(href)
-            if match:
-                version = match.group(1).replace("-", ".")
-                return {"version": version, "url": urljoin(self._base, href)}
+def _parse(html: str) -> lxml.html.HtmlElement | None:
+    if not html:
+        return None
+    try:
+        return lxml.html.fromstring(html)
+    except Exception:
         return None
 
-    async def _resolve_list_url(self, site: dict, version: str) -> str:
-        version_slug = to_apkmirror_version(version)
-        name_part = site.get("release_slug") or site["slug"]
-        folder_url = f"{self._base}/apk/{site['org']}/{site['slug']}"
 
-        candidates = [
-            f"{folder_url}/{name_part}-{version_slug}-release/",
-            f"{folder_url}/{name_part}-{version_slug}-release-0-release/",
-            f"{folder_url}/{name_part}-{version_slug}-beta-0-release/",
-            f"{folder_url}/{name_part}-{version_slug}-beta-1-release/",
-        ]
-        for candidate in candidates:
-            log.search(f"TRY: {candidate}")
-            tree = HTMLParser(await self.get_html(candidate))
-            if not _page_is_404(tree) and tree.css(".variants-table .table-row"):
-                return candidate
+def _abs_url(base: str, href: str | None) -> str | None:
+    return urljoin(base, href) if href else None
 
-        log.search("Direkt eslesme yok, liste sayfasinda taraniyor...")
-        tree = HTMLParser(await self.get_html(f"{folder_url}/"))
-        slug_part = f"-{version_slug}-"
-        for anchor in tree.css("a[href*='-release/']"):
-            href = anchor.attributes.get("href") or ""
-            if slug_part in href and "#" not in href:
-                return urljoin(self._base, href)
 
-        raise RuntimeError(f"APKMirror'da {version} surumu icin sayfa bulunamadi")
+def _page_text(tree: lxml.html.HtmlElement | None, limit: int) -> str:
+    if tree is None:
+        return ""
+    title = tree.findtext(".//title") or ""
+    body = tree.find(".//body")
+    body_text = " ".join(body.itertext())[:limit] if body is not None else ""
+    return f"{title} {body_text}".lower()
 
-    async def _extract_variant_url(self, html: str, app_name: str, force_build: str | None) -> str | None:
-        """Eski JS slot mantiginin Python portu: nodpi > anydpi > diger,
-        APK > bundle (instagram haric; o bundle/.apkm zorunlu)."""
-        allowed_archs = ("universal", "evrensel", "noarch", "arm64-v8a")
-        tree = HTMLParser(html)
-        candidates: list[str | None] = [None] * 6
 
-        for row in tree.css(".variants-table .table-row"):
-            cells = row.css(".table-cell")
-            if len(cells) < 4:
-                continue
-            link = cells[0].css_first("a.accent_color")
-            if link is None:
-                continue
-            name_text = cells[0].text()
-            if force_build and force_build not in name_text:
-                continue
-            badge = cells[0].css_first(".apkm-badge")
-            is_bundle = bool(badge and "bundle" in badge.text().lower())
-            if app_name == "instagram" and not is_bundle:
-                continue
-            arch_text = cells[1].text().lower().strip()
-            if arch_text and not any(a in arch_text for a in allowed_archs):
-                continue
-            dpi_text = cells[3].text().lower().strip()
-            if dpi_text == "" or "nodpi" in dpi_text:
-                slot = 3 if is_bundle else 0
-            elif "anydpi" in dpi_text:
-                slot = 4 if is_bundle else 1
-            else:
-                slot = 5 if is_bundle else 2
-            if candidates[slot] is None:
-                candidates[slot] = urljoin(self._base, link.attributes["href"])
+def _looks_like_challenge(html: str) -> bool:
+    if not html:
+        return False
+    content = _page_text(_parse(html), 500) or html[:1000].lower()
+    return any(marker in content for marker in _CHALLENGE_MARKERS)
 
-        return next((c for c in candidates if c), None)
 
-    async def _fetch_confirm_page(self, confirm_url: str, referer: str) -> str:
-        """Onay (download) sayfasini cek; challenge/404 durumlarinda FlareSolverr
-        ile cozumleyip tekrar dener. Geçici hatalara karsi tenacity retry'li."""
-        return await self.get_html(confirm_url, referer=referer)
+def _is_404_html(tree: lxml.html.HtmlElement | None) -> bool:
+    content = _page_text(tree, 300)
+    if "404" not in content:
+        return False
+    return "whoops" in content or "could not be found" in content or "not be found" in content
 
-    async def _find_download_link(self, page_url: str) -> str:
-        html = await self.get_html(page_url, referer=page_url.rsplit("/", 2)[0] + "/")
-        tree = HTMLParser(html)
-        button = tree.css_first("a.downloadButton")
-        if button is None:
-            raise RuntimeError(f"downloadButton bulunamadi: {page_url}")
-        confirm_url = urljoin(page_url, button.attributes.get("href") or "")
 
-        last_error: Exception | None = None
-        for attempt in range(1, 4):
-            try:
-                return await self._extract_from_confirm_page(confirm_url, referer=page_url)
-            except RuntimeError as e:
-                last_error = e
-                log.warn(f"Indirme sayfasi cozumleme denemesi {attempt}/3 basarisiz: {e}")
-                await asyncio.sleep(random.uniform(3.0, 6.0) * attempt)
+async def _save_diagnostic_html(html: str, label: str) -> None:
+    try:
+        DIAGNOSTICS_DIR.mkdir(parents=True, exist_ok=True)
+        path = DIAGNOSTICS_DIR / f"{label}-{int(time.time())}.html"
+        path.write_text(html or "", encoding="utf-8", errors="replace")
+        log.info(f"Diagnostic HTML saved: {path}")
+    except Exception as e:
+        log.warn(f"Could not save diagnostic HTML: {e}")
 
-        raise RuntimeError(f"Indirme baglantisi bulunamadi ({confirm_url}): {last_error}")
 
-    async def _extract_from_confirm_page(self, confirm_url: str, referer: str) -> str:
-        """Onay sayfasindan gercek dosya baglantisini cikarir.
+async def _fetch(url: str, label: str, deadline: float | None = None, challenge_retries: int = 3) -> Cleared:
+    await _apply_global_cooldown()
+    cleared: Cleared | None = None
 
-        APKMirror bazen dosyayi dogrudan onay URL'sinden akittir
-        (content-type ile anlasilir), bazen sayfada download.php /
-        download.apkmirror.com baglantisi sunar, bazen meta refresh ile
-        yonlendirir. Uc durum da kapsanir; hicbiri yoksa sayfadaki
-        baglantilarin ozeti hata mesajina eklenir (teşhis).
-        """
-        await self._throttle()
-        res = await self._http.get(confirm_url, headers={"Referer": referer})
-        self._last_request = time.monotonic()
-
-        if _looks_like_challenge(res.status_code, res.text):
-            log.warn(f"Cloudflare challenge (onay sayfasi): {confirm_url}")
-            await self._apply_clearance(confirm_url)
-            await self._throttle()
-            res = await self._http.get(confirm_url, headers={"Referer": referer})
-            self._last_request = time.monotonic()
-            if _looks_like_challenge(res.status_code, res.text):
-                raise RuntimeError("Onay sayfasinda challenge cozulemedi")
-
-        content_type = (res.headers.get("content-type") or "").lower()
-        disposition = (res.headers.get("content-disposition") or "").lower()
-        if (
-            res.status_code == 200
-            and (
-                "application/vnd.android" in content_type
-                or "octet-stream" in content_type
-                or ".apk" in disposition
-            )
-            and len(res.content) > 100_000
+    try:
+        async for attempt in AsyncRetrying(
+            stop=stop_after_attempt(challenge_retries + 1) | _BudgetExceeded(deadline),
+            wait=_ChallengeCooldownWait(),
+            retry=retry_if_exception_type(_ChallengePresent),
+            before_sleep=lambda rs: log.notice(
+                f"Cloudflare challenge detected ({label}), cooling down "
+                f"{(rs.next_action.sleep if rs.next_action else 0):.0f}s before retrying "
+                f"(challenge #{_challenge_hits} this run)..."
+            ),
+            reraise=True,
         ):
-            # Sunucu dosyayi dogrudan akitti; onay URL'si indirilecek.
-            log.info("Onay URL'si dosyayi dogrudan akittiyor")
-            return confirm_url
+            with attempt:
+                log.browser(f"Requesting via FlareSolverr ({label}): {url}")
+                try:
+                    cleared = await flaresolverr.get(url)
+                except FlareSolverrError as e:
+                    raise RuntimeError(f"FlareSolverr could not fetch {url}: {e}") from e
+                if cleared.status >= 400 or _looks_like_challenge(cleared.html):
+                    raise _ChallengePresent(_register_challenge())
+    except _ChallengePresent:
+        log.notice(f"Cloudflare challenge still present ({label}), proceeding anyway...")
+        if cleared is not None:
+            await _save_diagnostic_html(cleared.html, f"cloudflare-{label}")
 
-        if res.status_code >= 400:
-            raise RuntimeError(f"Onay sayfasi HTTP {res.status_code}")
+    if cleared is None:
+        raise RuntimeError(f"Could not fetch {url} ({label})")
+    return cleared
 
-        tree = HTMLParser(res.text)
 
-        # 1) meta refresh: <meta http-equiv="refresh" content="0;url=...">
-        for meta in tree.css("meta[http-equiv]"):
-            if (meta.attributes.get("http-equiv") or "").lower() != "refresh":
-                continue
-            content = meta.attributes.get("content") or ""
-            match = re.search(r"url\s*=\s*['\"]([^'\"]+)['\"]", content, re.IGNORECASE)
-            if match:
-                return urljoin(self._base, match.group(1))
+def _classes(el) -> list[str]:
+    return list(getattr(el, "classes", None) or [])
 
-        # 2) script yonlendirmesi: window.location = '...'
-        for script in tree.css("script"):
-            match = re.search(r"(?:location|href)\s*=\s*['\"]([^'\"]+)['\"]", script.text() or "")
-            if match and ("download" in match.group(1) or ".apk" in match.group(1)):
-                return urljoin(self._base, match.group(1))
 
-        # 3) aday baglantilar: download.php | download.apkmirror.com | .apk/.apkm
-        hrefs = [(a.attributes.get("href") or "") for a in tree.css("a[href]")]
-        for href in hrefs:
-            if _DOWNLOAD_HREF_RE.search(href) or "download.apkmirror.com" in href:
-                return urljoin(self._base, href)
+def _cell_text(cell) -> str:
+    return (cell.text_content() or "").strip() if cell is not None else ""
 
-        preview = ", ".join(h for h in hrefs if h)[:500] or "(hic baglanti yok)"
-        raise RuntimeError(f"Sayfada indirme baglantisi yok; bulunan baglantilar: {preview}")
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=retry_conf.incrementing(start=5.0, increment=10.0, max=30.0),
-        before_sleep=retry_conf.before_sleep("APKMirror indirme"),
-        reraise=True,
+def _closest(el, tags: set[str]):
+    node = el
+    while node is not None:
+        if node.tag in tags:
+            return node
+        node = node.getparent()
+    return None
+
+
+def _variant_rows(tree: lxml.html.HtmlElement | None) -> list:
+    if tree is None:
+        return []
+    rows = []
+    for el in tree.iter():
+        if "table-row" not in _classes(el):
+            continue
+        ancestor = el.getparent()
+        while ancestor is not None:
+            if "variants-table" in _classes(ancestor):
+                rows.append(el)
+                break
+            ancestor = ancestor.getparent()
+    return rows
+
+
+def _row_count(tree: lxml.html.HtmlElement | None) -> int:
+    return len(_variant_rows(tree))
+
+
+def _has_download_button(tree: lxml.html.HtmlElement | None) -> bool:
+    if tree is None:
+        return False
+    return any("downloadButton" in _classes(a) for a in tree.iter("a"))
+
+
+def _extract_variant_url(tree: lxml.html.HtmlElement | None, force_build: str | None, app_name: str) -> str | None:
+    candidates: list[str | None] = [None] * 6
+
+    for row in _variant_rows(tree):
+        cells = [c for c in row.iterchildren() if "table-cell" in _classes(c)]
+        if len(cells) < 4:
+            continue
+
+        link = next((a for a in cells[0].iter("a") if "accent_color" in _classes(a)), None)
+        if link is None:
+            continue
+
+        if force_build and force_build not in _cell_text(cells[0]):
+            continue
+
+        badge = next((b for b in cells[0].iter() if "apkm-badge" in _classes(b)), None)
+        badge_text = _cell_text(badge).upper()
+        is_bundle = "BUNDLE" in badge_text or "PAKET" in badge_text
+
+        if app_name == "instagram" and not is_bundle:
+            continue
+
+        arch_text = _cell_text(cells[1]).lower()
+        dpi_text = _cell_text(cells[3]).lower()
+
+        is_target_arch = arch_text == "" or any(a in arch_text for a in _ALLOWED_ARCHS)
+        if not is_target_arch:
+            continue
+
+        is_nodpi = dpi_text == "" or "nodpi" in dpi_text
+        is_anydpi = "anydpi" in dpi_text
+
+        if is_nodpi:
+            slot = 3 if is_bundle else 0
+        elif is_anydpi:
+            slot = 4 if is_bundle else 1
+        else:
+            slot = 5 if is_bundle else 2
+
+        if candidates[slot] is None:
+            candidates[slot] = link.get("href")
+
+    return next((c for c in candidates if c), None)
+
+
+def _dump_variant_rows_for_debug(tree: lxml.html.HtmlElement | None) -> None:
+    all_rows = [el for el in (tree.iter() if tree is not None else []) if "table-row" in _classes(el)]
+    scoped_rows = _variant_rows(tree)
+
+    log.info(
+        f"Debug: page has {len(all_rows)} .table-row elements "
+        f"({len(scoped_rows)} of them inside the real .variants-table), is404: {_is_404_html(tree)}"
     )
-    async def download_apk(self, version: str, app_name: str, force_build: str | None = None) -> str:
-        site = APP_SITES[app_name]
-        log.step(f"APKMirror cozumleniyor: {app_name.upper()} v{version}")
+    for i, row in enumerate(scoped_rows[:20]):
+        cells = [c for c in row.iterchildren() if "table-cell" in _classes(c)]
+        name = _cell_text(cells[0])[:60] if len(cells) > 0 else None
+        arch = _cell_text(cells[1]) if len(cells) > 1 else None
+        dpi = _cell_text(cells[3]) if len(cells) > 3 else None
+        log.info(f"   [{i}] cells={len(cells)} name={name!r} arch={arch!r} dpi={dpi!r}")
 
-        list_url = await self._resolve_list_url(site, version)
-        variant_url = await self._extract_variant_url(await self.get_html(list_url), app_name, force_build)
-        if variant_url is None:
-            raise RuntimeError(f"Uygun variant bulunamadi ({app_name} v{version})")
-        file_url = await self._find_download_link(variant_url)
-        log.link(file_url)
 
-        out_dir = Path.cwd() / "downloads"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        file_path = out_dir / f"{app_name}-{version}.part"
+async def _page_exists(url: str, deadline: float | None = None) -> bool:
+    try:
+        cleared = await _fetch(url, label="direct-try", deadline=deadline)
+        tree = _parse(cleared.html)
+        return not _is_404_html(tree) and _row_count(tree) > 0
+    except Exception:
+        return False
 
-        log.download(f"Indiriliyor: {app_name} v{version}")
-        await self._throttle()
-        filename = f"{app_name}-{version}.apk"
-        async with self._http.stream("GET", file_url) as res:
-            if res.status_code >= 400:
-                raise RuntimeError(f"Indirme HTTP {res.status_code}")
-            # Gercek dosya adi Content-Disposition'da gelir; bundle ise .apkm olur
-            filename = _filename_from_disposition(res.headers.get("content-disposition") or "") or filename
-            with open(file_path, "wb") as f:
-                async for chunk in res.aiter_content():
-                    f.write(chunk)
 
-        size = file_path.stat().st_size
-        if size < 1024:
-            file_path.unlink(missing_ok=True)
-            raise RuntimeError(f"Indirilen dosya cok kucuk ({size} bayt)")
+def _find_listing_link(tree: lxml.html.HtmlElement, base_url: str, slug_part: str) -> str | None:
+    for a in tree.iter("a"):
+        href = a.get("href")
+        if href and "-release/" in href and slug_part in href and "#" not in href:
+            return _abs_url(base_url, href)
+    return None
 
-        # Bundle (.apkm) mi duz APK mi: icerige bakarak karar ver.
-        # ZIP icinde baska .apk dosyalari varsa bundle'dir; morphe uzantidan
-        # anladigi icin dogru uzanti sart (aksi halde manifest NPE).
-        import zipfile
 
-        final_name = filename if filename.endswith((".apk", ".apkm")) else f"{app_name}-{version}.apk"
+async def _resolve_list_url(app_config: dict, version: str) -> tuple[str, bool]:
+    version_slug = to_apkmirror_version(version)
+    name_part = app_config.get("release_slug") or app_config["slug"]
+    folder_url = f"https://www.apkmirror.com/apk/{app_config['org']}/{app_config['slug']}"
+    deadline = time.monotonic() + RESOLVE_BUDGET_SECONDS
+
+    release_slugs = [
+        f"{name_part}-{version_slug}-release",
+        f"{name_part}-{version_slug}-release-0-release",
+        f"{name_part}-{version_slug}-beta-0-release",
+        f"{name_part}-{version_slug}-beta-1-release",
+    ]
+
+    for slug in release_slugs:
+        if time.monotonic() > deadline:
+            break
+
+        candidate = f"{folder_url}/{slug}/"
+        log.search(f"TRY: {candidate}")
+        if await _page_exists(candidate, deadline=deadline):
+            return candidate, False
+
+        if time.monotonic() > deadline:
+            break
+
+        direct_variant = f"{candidate}{name_part}-{version_slug}-android-apk-download/"
+        log.search(f"TRY (single-variant direct): {direct_variant}")
         try:
-            with zipfile.ZipFile(file_path) as zf:
-                names = zf.namelist()
-            if not any(n == "AndroidManifest.xml" for n in names) and any(n.endswith(".apk") for n in names):
-                if final_name.endswith(".apk"):
-                    final_name = final_name[:-4] + ".apkm"
-                elif not final_name.endswith(".apkm"):
-                    final_name += ".apkm"
-                log.info("Bundle (.apkm) algilandi, uzanti duzeltildi")
-        except zipfile.BadZipFile:
-            pass  # duz APK (ZIP degil); uzantiya dokunma
+            cleared = await _fetch(direct_variant, label="direct-variant-try", deadline=deadline)
+            tree = _parse(cleared.html)
+            if not _is_404_html(tree) and _has_download_button(tree):
+                return direct_variant, True
+        except Exception:
+            pass
 
-        final_path = out_dir / final_name
-        file_path.rename(final_path)
-        log.success(f"Indirildi: {final_path} ({size / 1024 / 1024:.1f} MB)")
-        return str(final_path)
+    if time.monotonic() > deadline:
+        raise RuntimeError(
+            f"Giving up on {app_config['slug']} v{version}: APKMirror kept challenge-walling every "
+            f"attempt (exceeded {RESOLVE_BUDGET_SECONDS:.0f}s resolve budget)"
+        )
+
+    log.search("No direct match, scanning app listing page...")
+    listing_url = f"{folder_url}/"
+    slug_part = f"-{version_slug}-"
+    last_cleared: Cleared | None = None
+
+    for _attempt in range(2):
+        if time.monotonic() > deadline:
+            break
+        last_cleared = await _fetch(listing_url, label="listing-scan", deadline=deadline)
+        tree = _parse(last_cleared.html)
+        found_url = _find_listing_link(tree, listing_url, slug_part) if tree is not None else None
+        if found_url:
+            return found_url, False
+
+    if last_cleared is not None:
+        await _save_diagnostic_html(last_cleared.html, f"no-match-{app_config['slug']}")
+    raise RuntimeError(f"No APKMirror release page found for version {version}")
 
 
-_client: APKMirrorClient | None = None
+async def _resolve_download_url(variant_url: str, variant_cleared: Cleared) -> tuple[str, Cleared]:
+    tree = _parse(variant_cleared.html)
+    buttons = tree.iter("a") if tree is not None else []
+    button = next((a for a in buttons if "downloadButton" in _classes(a)), None)
+    if button is None or not button.get("href"):
+        raise _ChallengePresent(_register_challenge())
+
+    confirm_url = _abs_url(variant_url, button.get("href"))
+    assert confirm_url is not None
+    confirm_cleared = await _fetch(confirm_url, label="confirm-page")
+    confirm_tree = _parse(confirm_cleared.html)
+
+    link = confirm_tree.get_element_by_id("download-link", None) if confirm_tree is not None else None
+    if link is not None and link.get("href"):
+        return _abs_url(confirm_url, link.get("href")), confirm_cleared
+
+    return confirm_url, confirm_cleared
 
 
-async def _get_client() -> APKMirrorClient:
-    global _client
-    if _client is None:
-        _client = APKMirrorClient()
-        await _client._flaresolverr.start()
-        await _client._prime_clearance()
-    return _client
+async def download_apk(version: str, app_name: str = "youtube", force_build: str | None = None) -> str:
+    app_config = APP_SITES.get(app_name)
+    if not app_config:
+        raise RuntimeError(f'Unknown appName "{app_name}" - not found in APP_SITES')
+
+    out_dir = Path(__file__).resolve().parent.parent.parent / "downloads"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    list_url, is_final = await _resolve_list_url(app_config, version)
+    log.info(f"LIST: {list_url}")
+
+    if is_final:
+        variant_url = list_url
+        log.info(f"VARIANT: {variant_url} (single-variant release)")
+    else:
+        listing_base = f"https://www.apkmirror.com/apk/{app_config['org']}/{app_config['slug']}/"
+        variant_url = None
+        for attempt in range(4):
+            cleared = await _fetch(list_url, label="list-page")
+            tree = _parse(cleared.html)
+            found = _extract_variant_url(tree, force_build, app_name) if tree is not None else None
+            variant_url = _abs_url(listing_base, found) if found else None
+            if variant_url:
+                break
+            log.notice(f"No matching row found on page, retrying ({attempt + 1}/4)...")
+            _dump_variant_rows_for_debug(tree)
+
+        if not variant_url:
+            await _save_diagnostic_html(cleared.html, f"no-variant-{app_name}")
+            raise RuntimeError("No matching variant found on APKMirror")
+        log.info(f"VARIANT: {variant_url}")
+
+    final_path: Path | None = None
+    last_error: Exception | None = None
+    last_variant_cleared: Cleared | None = None
+
+    try:
+        async for retry_attempt in AsyncRetrying(
+            stop=stop_after_attempt(4),
+            wait=_ChallengeCooldownWait(),
+            retry=retry_if_exception_type(_ChallengePresent),
+            before_sleep=lambda rs: log.notice(
+                f"Download attempt had no effect, cooling down "
+                f"{(rs.next_action.sleep if rs.next_action else 0):.0f}s before retrying "
+                f"(attempt #{_challenge_hits} this run)..."
+            ),
+            reraise=True,
+        ):
+            with retry_attempt:
+                variant_cleared = await _fetch(variant_url, label="variant-page")
+                last_variant_cleared = variant_cleared
+                file_url, cleared_for_cookies = await _resolve_download_url(variant_url, variant_cleared)
+
+                log.download(f"Downloading: {file_url}")
+                try:
+                    candidate_path = await flaresolverr.download_file(
+                        file_url, cleared_for_cookies, out_dir, f"{app_name}.apk"
+                    )
+                except FlareSolverrError as e:
+                    last_error = e
+                    raise _ChallengePresent(_register_challenge()) from e
+
+                size = candidate_path.stat().st_size if candidate_path.exists() else 0
+                if size < 1024:
+                    candidate_path.unlink(missing_ok=True)
+                    last_error = RuntimeError(f"Downloaded file too small ({size} bytes)")
+                    raise _ChallengePresent(_register_challenge())
+
+                final_path = candidate_path
+    except _ChallengePresent:
+        pass
+
+    if final_path is None:
+        if last_variant_cleared is not None:
+            await _save_diagnostic_html(last_variant_cleared.html, f"no-download-{app_name}")
+        raise last_error or RuntimeError("Download did not start / file not detected.")
+
+    log.success(f"DONE: {final_path} ({final_path.stat().st_size / 1024 / 1024:.2f} MB)")
+    return str(final_path)
+
+
+def _version_from_href(href: str | None) -> str | None:
+    if not href:
+        return None
+    match = re.search(r"-(\d[\d]*(?:-\d+)+)-release", href)
+    if not match:
+        return None
+    return match.group(1).replace("-", ".")
+
+
+def _listing_candidates(tree: lxml.html.HtmlElement, base_url: str) -> list[tuple[str, str]]:
+    results = []
+    for a in tree.iter("a"):
+        href = a.get("href")
+        if not href or "-release/" not in href:
+            continue
+        row = _closest(a, {"div", "li", "tr"})
+        if row is None:
+            row = a.getparent() if a.getparent() is not None else a
+        abs_href = _abs_url(base_url, href)
+        if abs_href:
+            results.append((abs_href, row.text_content() or ""))
+        if len(results) >= 15:
+            break
+    return results
 
 
 async def get_latest_listing(app_name: str) -> dict | None:
-    return await (await _get_client()).get_latest_listing(app_name)
+    app_config = APP_SITES.get(app_name)
+    if not app_config:
+        raise RuntimeError(f'Unknown appName "{app_name}" - not found in APP_SITES')
 
+    listing_url = f"https://www.apkmirror.com/apk/{app_config['org']}/{app_config['slug']}/"
+    log.info(f"LISTING: {listing_url}")
 
-async def download_apk(version: str, app_name: str, force_build: str | None = None) -> str:
-    return await (await _get_client()).download_apk(version, app_name, force_build)
+    cleared: Cleared | None = None
+    candidates: list[tuple[str, str]] = []
+    for attempt in range(4):
+        cleared = await _fetch(listing_url, label="app-listing")
+        tree = _parse(cleared.html)
+        candidates = _listing_candidates(tree, listing_url) if tree is not None else []
+        if candidates:
+            break
+        log.notice(f"No link found on listing page, retrying ({attempt + 1}/4)...")
 
+    if not candidates:
+        if cleared is not None:
+            await _save_diagnostic_html(cleared.html, f"no-listing-{app_name}")
+        return None
 
-async def close_browser() -> None:  # API geriye uyumluluk
-    global _client
-    if _client is not None:
-        await _client.close()
-        _client = None
+    for href, text in candidates:
+        version = _version_from_href(href)
+        if not version:
+            match = re.search(r"\d+(?:\.\d+)+", text)
+            version = match.group(0) if match else None
+        if version:
+            return {"version": version, "href": href}
+
+    if cleared is not None:
+        await _save_diagnostic_html(cleared.html, f"no-version-{app_name}")
+    return None

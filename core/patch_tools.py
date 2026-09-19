@@ -8,16 +8,13 @@ from . import retry as retry_conf
 from .http import new_session
 from .settings import settings
 
-_GH_HEADERS = {
-    "User-Agent": "python",
-    "Accept": "application/vnd.github+json",
-    "Authorization": f"Bearer {settings.github_token.get_secret_value()}",
-}
 
-
-async def fetch_releases(owner: str, repo: str) -> list[dict]:
-    """Reponun son 30 release'ini dondurur (draft olmayanlar)."""
-    url = f"https://api.github.com/repos/{owner}/{repo}/releases?per_page=30"
+async def fetch_latest_release(owner: str, repo: str, prerelease: bool = False) -> dict | list[dict]:
+    url = (
+        f"https://api.github.com/repos/{owner}/{repo}/releases"
+        if prerelease
+        else f"https://api.github.com/repos/{owner}/{repo}/releases/latest"
+    )
 
     @retry(
         stop=stop_after_attempt(5),
@@ -27,26 +24,25 @@ async def fetch_releases(owner: str, repo: str) -> list[dict]:
     )
     async def _do():
         async with new_session(timeout=30) as client:
-            res = await client.get(url, headers=_GH_HEADERS)
+            res = await client.get(
+                url,
+                headers={
+                    "User-Agent": "python",
+                    "Accept": "application/vnd.github+json",
+                    "Authorization": f"Bearer {settings.github_token.get_secret_value()}",
+                },
+            )
             if res.status_code >= 400:
                 raise RuntimeError(f"GitHub API error: {res.status_code}")
+
             data = res.json()
-            if not isinstance(data, list):
-                raise RuntimeError("Unexpected GitHub API response")
-            return [r for r in data if not r.get("draft")]
+
+            if prerelease and (not isinstance(data, list) or not data):
+                raise RuntimeError("No releases found")
+
+            return data
 
     return await _do()
-
-
-async def fetch_latest_release(owner: str, repo: str, prerelease: bool = False) -> dict:
-    releases = await fetch_releases(owner, repo)
-    if not prerelease:
-        stable = [r for r in releases if not r.get("prerelease")]
-        if stable:
-            releases = stable
-    if not releases:
-        raise RuntimeError("No releases found")
-    return releases[0]
 
 
 async def _download_file(url: str, output_path: Path, expected_size: int | None = None) -> str:
@@ -83,35 +79,35 @@ async def _download_file(url: str, output_path: Path, expected_size: int | None 
 async def download_latest_github_asset(
     owner: str, repo: str, match: Callable[[str], bool], prerelease: bool = False
 ) -> dict:
-    """Eslesen asset'i ararken SADECE son release'e bakma.
-
-    Bazi patch kaynaklari (or. jasonwu/Gboard-patches) araya tema paketi
-    gibi surumler koyabiliyor; bu durumda eslesen asset'i iceren EN YENI
-    release secilir.
-    """
     log.step(f"Fetching release: {owner}/{repo}")
 
-    releases = await fetch_releases(owner, repo)
+    data = await fetch_latest_release(owner, repo, prerelease)
 
-    candidates = releases
-    if not prerelease:
-        stable = [r for r in releases if not r.get("prerelease")]
-        # Stabil release'te asset yoksa prerelease'lere geri dus
-        candidates = stable if any(r.get("assets") for r in stable) else releases
+    if prerelease:
+        # /releases lists every release newest-first, prerelease or not - it can include
+        # releases that have nothing to do with what we're after (e.g. a repo also publishes
+        # unrelated preview/demo assets). Walk the list and use the first release that actually
+        # has a matching asset, instead of blindly trusting data[0].
+        releases = data
+        release = next((r for r in releases if any(match(a["name"]) for a in (r.get("assets") or []))), None)
+        if release is None:
+            checked = ", ".join(r.get("tag_name") or r.get("name") or "?" for r in releases[:5])
+            raise RuntimeError(
+                f"No release with a matching asset found in {owner}/{repo} "
+                f"(checked {len(releases)} release(s), most recent: {checked})"
+            )
+    else:
+        release = data
 
-    selected: tuple[dict, dict] | None = None
-    for release in candidates:
-        asset = next((a for a in release.get("assets") or [] if match(a["name"])), None)
-        if asset:
-            selected = (release, asset)
-            break
+    assets = release.get("assets") or []
+    if not assets:
+        raise RuntimeError(f"Repo {owner}/{repo} has no assets")
 
-    if not selected:
-        raise RuntimeError(f"Matching asset not found in {owner}/{repo} (son {len(releases)} release tarandi)")
+    asset = next((a for a in assets if match(a["name"])), None)
+    if not asset:
+        raise RuntimeError("Matching asset not found")
 
-    release, asset = selected
-    log.info(f"Selected: {asset['name']} (release: {release.get('tag_name')})")
-    log.link(asset["browser_download_url"])
+    log.info(f"Selected: {asset['name']} (release: {release.get('tag_name') or release.get('name') or '?'})")
 
     out_path = Path(asset["name"])
 

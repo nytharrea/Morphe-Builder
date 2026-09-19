@@ -8,7 +8,7 @@ from core.release import (
     create_new_release,
     delete_other_releases,
     upload_microg_once,
-    upload_patched_apk,
+    upload_patched_apks,
     upload_pothelper_once,
 )
 from core.settings import settings
@@ -111,9 +111,7 @@ async def main():
     for apk in matched:
         used_sources.update(patch_sources_for(apk["app_key"]))
 
-    notes_sources = [key for key in sorted(used_sources) if key in PATCH_SOURCES]
-
-    async def _fetch_notes(key: str):
+    async def _fetch_release_notes(key: str) -> str:
         owner, repo, label = PATCH_SOURCES[key]
         try:
             asset = await download_latest_github_asset(
@@ -122,36 +120,25 @@ async def main():
                 prerelease=True,
                 match=lambda n: n.endswith(".mpp"),
             )
-            return label, asset
-        except Exception as e:
-            log.warn(f"Could not fetch release notes for {label}: {e}")
-            return label, None
-
-    # Notlar birbirinden bagimsiz: paralel indir
-    notes_results = await asyncio.gather(*(_fetch_notes(key) for key in notes_sources))
-    for label, asset in notes_results:
-        if asset:
-            body += (
+            return (
                 f"\n<details>\n<summary>{label} Release Notes ({asset['tag']})</summary>\n<br>\n\n"
                 f"{asset['body']}\n\n</details>\n"
             )
+        except Exception as e:
+            log.warn(f"Could not fetch release notes for {label}: {e}")
+            return ""
+
+    source_keys = [key for key in sorted(used_sources) if key in PATCH_SOURCES]
+    body += "".join(await asyncio.gather(*(_fetch_release_notes(key) for key in source_keys)))
 
     log.step(f"Creating release: {release_tag}")
     release = await create_new_release(release_tag, release_name, body, draft=False)
     log.success(f"Release created: {release['tag_name']} (id={release['id']})")
 
-    upload_sem = asyncio.Semaphore(6)
-
-    async def _upload_one(apk):
-        async with upload_sem:
-            await upload_patched_apk(release, apk["path"])
-
-    # Yuklemeler birbirinden bagimsiz: paralel yukle (GitHub baglantisi
-    # basina ~10 MB/s sinirli; 6 worker ~5 dk -> ~1-1.5 dk'ya duser)
-    await asyncio.gather(*(_upload_one(apk) for apk in matched))
+    log.step(f"Uploading {len(matched)} patched APK(s) (up to {settings.upload_concurrency} at once)...")
+    await upload_patched_apks(release, [apk["path"] for apk in matched])
 
     if any(apk["app_key"] in ("youtube", "youtube-music") for apk in matched):
-        # microG ve PotHelper birbirinden bagimsiz: paralel yukle
         await asyncio.gather(upload_microg_once(release), upload_pothelper_once(release))
 
     log.success("All apps successfully published under one release!")
