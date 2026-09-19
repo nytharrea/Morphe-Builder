@@ -13,6 +13,7 @@ the cookies and user-agent FlareSolverr just cleared for that origin.
 """
 
 import re
+import zipfile
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -129,6 +130,35 @@ def _filename_from_url(url: str, fallback: str) -> str:
     return name if name and "." in name else fallback
 
 
+_BUNDLE_MARKERS = (("info.json", ".apkm"), ("manifest.json", ".xapk"), ("toc.pb", ".apks"))
+
+
+def _detect_suffix(path: Path) -> str | None:
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = set(archive.namelist())
+    except (zipfile.BadZipFile, OSError):
+        return None
+
+    if "AndroidManifest.xml" in names:
+        return ".apk"
+    for marker, suffix in _BUNDLE_MARKERS:
+        if marker in names:
+            return suffix
+    return ".apkm" if any(name.endswith(".apk") for name in names) else None
+
+
+def _name_by_content(path: Path, fallback_name: str) -> Path:
+    suffix = _detect_suffix(path)
+    if suffix is None:
+        return path
+
+    target = path.with_name(Path(fallback_name).stem + suffix)
+    if target != path:
+        path.replace(target)
+    return target
+
+
 async def download_file(url: str, cleared: Cleared, out_dir: Path, fallback_name: str) -> Path:
     headers = {"User-Agent": cleared.user_agent} if cleared.user_agent else {}
     async with (
@@ -145,4 +175,4 @@ async def download_file(url: str, cleared: Cleared, out_dir: Path, fallback_name
             async for chunk in res.aiter_content():
                 f.write(chunk)
 
-    return out_path
+    return _name_by_content(out_path, fallback_name)

@@ -405,8 +405,9 @@ async def _resolve_download_url(variant_url: str, variant_cleared: Cleared) -> t
     confirm_tree = _parse(confirm_cleared.html)
 
     link = confirm_tree.get_element_by_id("download-link", None) if confirm_tree is not None else None
-    if link is not None and link.get("href"):
-        return _abs_url(confirm_url, link.get("href")), confirm_cleared
+    file_url = _abs_url(confirm_url, link.get("href")) if link is not None else None
+    if file_url:
+        return file_url, confirm_cleared
 
     return confirm_url, confirm_cleared
 
@@ -442,6 +443,8 @@ async def download_apk(version: str, app_name: str = "youtube", force_build: str
             await _save_diagnostic_html(cleared.html, f"no-variant-{app_name}")
             raise RuntimeError("No matching variant found on APKMirror")
         log.info(f"VARIANT: {variant_url}")
+
+    assert variant_url is not None
 
     final_path: Path | None = None
     last_error: Exception | None = None

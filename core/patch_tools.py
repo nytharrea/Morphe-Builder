@@ -45,7 +45,7 @@ async def fetch_latest_release(
                 },
             )
             if res.status_code >= 400:
-                raise RuntimeError(f"GitHub API error: {res.status_code}")
+                raise RuntimeError(f"GitHub API error: {res.status_code} ({owner}/{repo})")
 
             return res.json()
 
