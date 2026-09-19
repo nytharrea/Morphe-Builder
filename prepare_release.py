@@ -1,8 +1,10 @@
+import json
 import os
 import sys
 from datetime import UTC, datetime
 
 from core import log
+from core.config import PROCESS_ORDER
 from core.validate import validate_config
 
 
@@ -25,6 +27,7 @@ def main():
         with open(github_output, "a") as f:
             f.write(f"tag={tag}\n")
             f.write(f"name={name}\n")
+            f.write(f"apps={json.dumps(PROCESS_ORDER, separators=(',', ':'))}\n")
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ from pathlib import Path
 from core import log
 from core.apk.patcher import patch_apk
 from core.apk.verify import verify_apk_signature
-from core.apk.versions import extract_youtube_versions, pick_latest_version
+from core.apk.versions import extract_versions, pick_latest_version
 from core.config import (
     APKMIRROR_APPS,
     APPS_CONFIG,
@@ -52,7 +52,11 @@ async def process_app(app_key: str, desktop: str, patches: list[str]) -> dict | 
                 text=True,
             )
             output = (result.stdout or "") + (result.stderr or "")
-            versions = extract_youtube_versions(output)
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"list-versions failed with exit code {result.returncode}: {output.strip()[-1000:]}"
+                )
+            versions = extract_versions(output)
             if versions:
                 selected_version = pick_latest_version(versions)
         except Exception as e:
