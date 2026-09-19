@@ -9,7 +9,19 @@ from .http import new_session
 from .settings import settings
 
 
-async def fetch_latest_release(owner: str, repo: str, prerelease: bool = False) -> dict | list[dict]:
+def _select_release(releases: list[dict], match: Callable[[str], bool] | None = None) -> dict | None:
+    for release in releases:
+        if release.get("draft"):
+            continue
+        if match is None or any(match(a["name"]) for a in release.get("assets") or []):
+            return release
+        log.notice(f"Skipping release {release.get('tag_name')}: no matching asset")
+    return None
+
+
+async def fetch_latest_release(
+    owner: str, repo: str, prerelease: bool = False, match: Callable[[str], bool] | None = None
+) -> dict:
     url = (
         f"https://api.github.com/repos/{owner}/{repo}/releases"
         if prerelease
@@ -35,14 +47,18 @@ async def fetch_latest_release(owner: str, repo: str, prerelease: bool = False) 
             if res.status_code >= 400:
                 raise RuntimeError(f"GitHub API error: {res.status_code}")
 
-            data = res.json()
+            return res.json()
 
-            if prerelease and (not isinstance(data, list) or not data):
-                raise RuntimeError("No releases found")
+    data = await _do()
 
-            return data
+    if not prerelease:
+        return data
 
-    return await _do()
+    release = _select_release(data, match) if isinstance(data, list) else None
+    if release is None:
+        raise RuntimeError(f"No release with a matching asset found in {owner}/{repo}")
+
+    return release
 
 
 async def _download_file(url: str, output_path: Path, expected_size: int | None = None) -> str:
@@ -81,23 +97,7 @@ async def download_latest_github_asset(
 ) -> dict:
     log.step(f"Fetching release: {owner}/{repo}")
 
-    data = await fetch_latest_release(owner, repo, prerelease)
-
-    if prerelease:
-        # /releases lists every release newest-first, prerelease or not - it can include
-        # releases that have nothing to do with what we're after (e.g. a repo also publishes
-        # unrelated preview/demo assets). Walk the list and use the first release that actually
-        # has a matching asset, instead of blindly trusting data[0].
-        releases = data
-        release = next((r for r in releases if any(match(a["name"]) for a in (r.get("assets") or []))), None)
-        if release is None:
-            checked = ", ".join(r.get("tag_name") or r.get("name") or "?" for r in releases[:5])
-            raise RuntimeError(
-                f"No release with a matching asset found in {owner}/{repo} "
-                f"(checked {len(releases)} release(s), most recent: {checked})"
-            )
-    else:
-        release = data
+    release = await fetch_latest_release(owner, repo, prerelease, match)
 
     assets = release.get("assets") or []
     if not assets:
@@ -107,7 +107,7 @@ async def download_latest_github_asset(
     if not asset:
         raise RuntimeError("Matching asset not found")
 
-    log.info(f"Selected: {asset['name']} (release: {release.get('tag_name') or release.get('name') or '?'})")
+    log.info(f"Selected: {asset['name']} ({release.get('tag_name')})")
 
     out_path = Path(asset["name"])
 

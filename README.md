@@ -137,6 +137,7 @@ Each row is one entry in `core/config.py`'s `PROCESS_ORDER` — the key used for
 | `inure-play` | `app.simple.inure.play` | GitHub | ⚡ Rushiranpise |
 | `proton-pass` | `proton.android.pass` | APKMirror | ⚡ Rushiranpise |
 | `notesnook` | `com.streetwriters.notesnook` | APKMirror | 🔥 hxreborn |
+| `fairemail` | `eu.faircode.email` | APKMirror | 💎 Heval |
 
 "APKMirror" means the app is scraped from apkmirror.com through a [FlareSolverr](https://github.com/FlareSolverr/FlareSolverr) sidecar container that clears its Cloudflare challenge; "GitHub" means it's downloaded directly from a GitHub release (`core/sources/github_apk.py`'s `DIRECT_REPOS`), which is faster and doesn't need FlareSolverr at all.
 
@@ -169,7 +170,7 @@ Each row is one entry in `core/config.py`'s `PROCESS_ORDER` — the key used for
 | `log.py` | Leveled, colored console logging (`log.step`, `log.info`, `log.warn`, `log.notice`, `log.success`, `log.error`, …), a `NOTICE` level for expected/self-recovering events (retries, cooldowns) that stay out of GitHub's Warning annotations, GitHub Actions annotation output for real warnings/errors, and `patch_line()`, which classifies and re-colors the patcher CLI's own raw output line by line. |
 | `retry.py` | Shared `tenacity` wait-strategy and `before_sleep` helpers used by every retry loop in the codebase, so backoff behavior and logging are consistent everywhere instead of hand-rolled per call site. |
 | `http.py` | One shared `curl_cffi` session factory (`new_session`), configured to impersonate a current Firefox TLS/HTTP fingerprint. |
-| `patch_tools.py` | `download_latest_github_asset()` — fetch a GitHub repo's latest (or latest prerelease) release, pick the asset matching a predicate, and resumably download it with retries. Used for the patcher jar, every patch bundle, and the MicroG/PotHelper companions. |
+| `patch_tools.py` | `download_latest_github_asset()` — fetch a GitHub repo's latest release (or, in prerelease mode, the newest non-draft release that actually ships an asset matching the predicate, so companion releases such as theme-preview zips are skipped), pick that asset, and resumably download it with retries. Used for the patcher jar, every patch bundle, and the MicroG/PotHelper companions. |
 | `release.py` | Thin GitHub Releases REST API wrapper: create a release, list/delete releases and tags, upload an asset (replacing one of the same name if present), and the MicroG/PotHelper companion-upload helpers. |
 | `notify.py` | Sends the end-of-run summary through `apprise` to whichever of Discord/Telegram/Apprise-URL targets are configured; also builds the summary/all-failed message text. |
 | `validate.py` | `validate_config()` — cross-checks `core/config.py` for internal consistency (every `PROCESS_ORDER` entry has an `APPS_CONFIG` entry and vice versa, every `patch_source` exists in `PATCH_SOURCES`, every APKMirror/GitHub app has a matching source-module entry) and raises one exception listing everything wrong at once. |

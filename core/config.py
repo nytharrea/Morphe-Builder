@@ -328,7 +328,7 @@ PATCH_SOURCES: dict[str, tuple[str, str, str]] = {
     "bluedragon-tiktok": ("BlueDragon4251", "tiktok-patches-for-morphe", "🔷 BlueIT Service"),
     "hushfeed": ("SysAdminDoc", "hushfeed", "🤫 Hushfeed"),
     "kveld-tiktok": ("kveld9", "kveld-morphe-patches", "🌙 Kveld"),
-    "heval": ("heval99", "Heval-Morphe", "🧩 Heval"),
+    "heval": ("heval99", "Heval-Morphe", "💎 Heval"),
 }
 
 
