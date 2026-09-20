@@ -115,9 +115,14 @@ async def delete_asset(asset_id: int):
         )
 
 
+def _iter_file_chunks(file_path: str, chunk_size: int = 8 * 1024 * 1024):
+    with open(file_path, "rb") as f:
+        while chunk := f.read(chunk_size):
+            yield chunk
+
+
 async def _upload(upload_url: str, file_path: str) -> dict:
     file_name = Path(file_path).name
-    data = Path(file_path).read_bytes()
 
     url = upload_url.replace("{?name,label}", "") + f"?name={file_name}"
 
@@ -128,7 +133,7 @@ async def _upload(upload_url: str, file_path: str) -> dict:
                 **HEADERS,
                 "Content-Type": "application/vnd.android.package-archive",
             },
-            content=data,
+            content=_iter_file_chunks(file_path),
         )
         return res.json()
 

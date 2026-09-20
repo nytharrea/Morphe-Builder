@@ -1,4 +1,4 @@
-from core.apk.versions import extract_youtube_versions, pick_latest_version, to_apkmirror_version
+from core.apk.versions import extract_cli_versions, pick_latest_version, to_apkmirror_version
 
 
 def test_extract_versions_from_compatible_section():
@@ -10,7 +10,7 @@ def test_extract_versions_from_compatible_section():
         "\n"
         "Trailing text that should not be reached\n"
     )
-    result = extract_youtube_versions(output)
+    result = extract_cli_versions(output)
     assert result == [
         {"version": "19.35.36", "patches": 5},
         {"version": "19.34.42", "patches": 3},
@@ -19,13 +19,13 @@ def test_extract_versions_from_compatible_section():
 
 def test_extract_versions_ignores_non_matching_lines_in_section():
     output = "Most common compatible versions:\nsome unrelated note\n19.35.36 (5 patches)\n\n"
-    result = extract_youtube_versions(output)
+    result = extract_cli_versions(output)
     assert result == [{"version": "19.35.36", "patches": 5}]
 
 
 def test_extract_versions_falls_back_when_no_section_header():
     output = "Available versions: 1.2.3, 1.2.4 and 2.0.0-beta.1 are supported"
-    result = extract_youtube_versions(output)
+    result = extract_cli_versions(output)
     assert result == [
         {"version": "1.2.3", "patches": 0},
         {"version": "1.2.4", "patches": 0},
@@ -34,7 +34,7 @@ def test_extract_versions_falls_back_when_no_section_header():
 
 
 def test_extract_versions_empty_input():
-    assert extract_youtube_versions("") == []
+    assert extract_cli_versions("") == []
 
 
 def test_pick_latest_version_prefers_higher_patch_count():

@@ -5,8 +5,7 @@ from tenacity import retry, stop_after_attempt
 
 from . import log
 from . import retry as retry_conf
-from .http import new_session
-from .settings import settings
+from .http import github_headers, new_session
 
 
 def _select_release(releases: list[dict], match: Callable[[str], bool] | None = None) -> dict | None:
@@ -38,11 +37,7 @@ async def fetch_latest_release(
         async with new_session(timeout=30) as client:
             res = await client.get(
                 url,
-                headers={
-                    "User-Agent": "python",
-                    "Accept": "application/vnd.github+json",
-                    "Authorization": f"Bearer {settings.github_token.get_secret_value()}",
-                },
+                headers=github_headers({"User-Agent": "python", "Accept": "application/vnd.github+json"}),
             )
             if res.status_code >= 400:
                 raise RuntimeError(f"GitHub API error: {res.status_code} ({owner}/{repo})")

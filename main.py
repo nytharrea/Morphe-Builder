@@ -7,7 +7,7 @@ from pathlib import Path
 from core import log
 from core.apk.patcher import patch_apk
 from core.apk.verify import verify_apk_signature
-from core.apk.versions import extract_youtube_versions, pick_latest_version
+from core.apk.versions import extract_cli_versions, pick_latest_version
 from core.config import (
     APKMIRROR_APPS,
     APPS_CONFIG,
@@ -51,10 +51,16 @@ async def process_app(app_key: str, desktop: str, patches: list[str]) -> dict | 
                 capture_output=True,
                 text=True,
             )
-            output = (result.stdout or "") + (result.stderr or "")
-            versions = extract_youtube_versions(output)
-            if versions:
-                selected_version = pick_latest_version(versions)
+            if result.returncode != 0:
+                stderr_tail = (result.stderr or "").strip().splitlines()[-5:]
+                log.warn(
+                    f"'list-versions' exited with code {result.returncode}, "
+                    f"skipping CLI-reported versions: {' | '.join(stderr_tail) or '(no output)'}"
+                )
+            else:
+                versions = extract_cli_versions(result.stdout or "")
+                if versions:
+                    selected_version = pick_latest_version(versions)
         except Exception as e:
             log.warn(f"Could not fetch version list: {e}")
 

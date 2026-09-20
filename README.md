@@ -13,12 +13,13 @@ A GitHub Actions pipeline that downloads Android APKs, patches them (ReVanced-st
 - [Project Structure](#project-structure)
 - [CI (Lint & Test)](#ci-lint--test)
 - [Configuration Reference](#configuration-reference)
+- [License](#license)
 
 ## How It Works
 
 One workflow, `.github/workflows/patch.yml`, runs as four jobs:
 
-1. **`prepare`** — installs dependencies, freezes `requirements-lock.txt`, computes a release tag/name for this run (`prepare_release.py`), and pushes the lockfile if it changed.
+1. **`prepare`** — installs dependencies from the lockfile, computes a release tag/name for this run (`prepare_release.py`), and validates `core/config.py` against both itself and the workflow's own `matrix.app` list.
 2. **`patch`** — a matrix job, one runner per app (see [Supported Apps](#supported-apps)), running in parallel. Each runner downloads that app's original APK (from APKMirror, via a [FlareSolverr](https://github.com/FlareSolverr/FlareSolverr) sidecar container that clears its Cloudflare challenge, or directly from a GitHub release), verifies its signing certificate against a pinned fingerprint, patches it with the matching patch bundle, re-signs it with your keystore, and uploads it as a build artifact.
 3. **`finalize`** — downloads every artifact the matrix produced, matches each file back to its app, builds one release description (with per-app version numbers and collapsible patch-source changelogs), creates a single GitHub Release with every APK attached, uploads MicroG/PotHelper companions if YouTube or YT Music was patched, deletes older releases, and sends a Discord/Telegram/Apprise notification.
 4. **`cleanup`** — deletes old workflow runs to keep the Actions tab tidy.
@@ -31,7 +32,7 @@ A **separate** workflow, `.github/workflows/lint.yml`, runs `ruff`, `mypy`, and 
 
 ### 1. Fork or use this repo
 
-Push it to your own GitHub account/org — the workflow needs write access to create releases and commit signature records.
+Push it to your own GitHub account/org — the workflow needs write access to create releases and commit signature records. Licensed GPL-3.0 (see [License](#license)) — forks and modified versions stay under the same terms.
 
 ### 2. Repository permissions
 
@@ -147,7 +148,7 @@ Each row is one entry in `core/config.py`'s `PROCESS_ORDER` — the key used for
 2. Add its key to `PROCESS_ORDER`.
 3. If it downloads via APKMirror, add it to `APKMIRROR_APPS` and give it an entry in `core/sources/apkmirror.py`'s `APP_SITES` (the org/app slug APKMirror uses in its URLs). Otherwise, add it to `core/sources/github_apk.py`'s `DIRECT_REPOS`.
 4. Add it to the `matrix.app` list in `.github/workflows/patch.yml`.
-5. `python -c "from core.validate import validate_config; validate_config()"` catches most config mistakes (missing `PROCESS_ORDER`/`APKMIRROR_APPS`/`APP_SITES`/`DIRECT_REPOS` entries) before you push.
+5. `python -c "from core.validate import validate_config; validate_config()"` catches most config mistakes (missing `PROCESS_ORDER`/`APKMIRROR_APPS`/`APP_SITES`/`DIRECT_REPOS` entries, or a `matrix.app` list in `patch.yml` that doesn't match `PROCESS_ORDER`) before you push.
 6. Run it once — it will fail on purpose with a pending-signature message. Follow [First run: pending signatures](#4-first-run-pending-signatures) to pin its certificate, then run again.
 
 ## Project Structure
@@ -173,7 +174,7 @@ Each row is one entry in `core/config.py`'s `PROCESS_ORDER` — the key used for
 | `patch_tools.py` | `download_latest_github_asset()` — fetch a GitHub repo's latest release (or, in prerelease mode, the newest non-draft release that actually ships an asset matching the predicate, so companion releases such as theme-preview zips are skipped), pick that asset, and resumably download it with retries. Used for the patcher jar, every patch bundle, and the MicroG/PotHelper companions. |
 | `release.py` | Thin GitHub Releases REST API wrapper: create a release, list/delete releases and tags, upload an asset (replacing one of the same name if present), and the MicroG/PotHelper companion-upload helpers. |
 | `notify.py` | Sends the end-of-run summary through `apprise` to whichever of Discord/Telegram/Apprise-URL targets are configured; also builds the summary/all-failed message text. |
-| `validate.py` | `validate_config()` — cross-checks `core/config.py` for internal consistency (every `PROCESS_ORDER` entry has an `APPS_CONFIG` entry and vice versa, every `patch_source` exists in `PATCH_SOURCES`, every APKMirror/GitHub app has a matching source-module entry) and raises one exception listing everything wrong at once. |
+| `validate.py` | `validate_config()` — cross-checks `core/config.py` for internal consistency (every `PROCESS_ORDER` entry has an `APPS_CONFIG` entry and vice versa, every `patch_source` exists in `PATCH_SOURCES`, every APKMirror/GitHub app has a matching source-module entry), also parses `patch.yml`'s own `matrix.app` list and flags anything that's out of sync with `PROCESS_ORDER` (or duplicated), and raises one exception listing everything wrong at once. |
 
 ### `core/apk/` — APK-level operations
 
@@ -197,7 +198,7 @@ Each row is one entry in `core/config.py`'s `PROCESS_ORDER` — the key used for
 |---|---|
 | `patch.yml` | The pipeline itself — `prepare` → `patch` (matrix) → `finalize` → `cleanup`, as described in [How It Works](#how-it-works). |
 | `lint.yml` | Runs `ruff check`, `ruff format --check`, `mypy`, and `pytest` on every push to `main` and every pull request. |
-| `dependabot.yml` | Weekly automated PRs for GitHub Actions version bumps. |
+| `dependabot.yml` | Automated PRs for GitHub Actions version bumps (daily) and Python package bumps (weekly, `requirements.txt`/`requirements-dev.txt`) — lint-and-test gates every PR, and Dependabot's own PRs auto-merge once it's green. |
 
 ### `data/`
 
@@ -211,11 +212,11 @@ Each row is one entry in `core/config.py`'s `PROCESS_ORDER` — the key used for
 | File | Purpose |
 |---|---|
 | `pyproject.toml` | `ruff` (line length 115, `E`/`F`/`I`/`UP`/`B`/`SIM` rule sets), `mypy`, and `pytest` configuration. |
-| `requirements.txt` | Direct, unpinned dependencies. |
+| `requirements.txt` | Direct dependencies, pinned to exact versions. Dependabot opens a PR when one has an update. |
 | `requirements-dev.txt` | The above plus `pytest`, `pytest-asyncio`, `ruff`, `mypy`. |
-| `requirements-lock.txt` | Full pinned dependency tree (`pip freeze`), regenerated and committed automatically by the `prepare` job on every run. |
+| `requirements-lock.txt` | Full pinned dependency tree (`pip freeze`), installed as-is by both the `prepare` and `patch` jobs. Regenerate it by hand (`pip install -r requirements.txt && pip freeze > requirements-lock.txt`) after a dependency bump lands, and commit it normally — it's no longer touched automatically. |
 | `tests/` | `pytest` unit tests for `core/retry.py`, `core/validate.py`, `core/apk/versions.py`, `core/sources/apkmirror.py`'s HTML-parsing/selection logic, and `finalize_release.py`'s asset-matching logic. |
-| `.gitignore` | Excludes `__pycache__`, virtualenvs, downloaded APKs, `.env` files, and `diagnostics/`. |
+| `.gitignore` | Excludes `__pycache__`, virtualenvs, downloaded APKs, decoded `.keystore` files, `.env` files, and `diagnostics/`. |
 
 ## CI (Lint & Test)
 
@@ -242,7 +243,7 @@ Every environment variable `core/settings.py` reads (matched case-insensitively)
 | `FLARESOLVERR_URL` | `core/sources/flaresolverr.py` | The FlareSolverr instance's API endpoint. Defaults to `http://localhost:8191/v1`, matching the `patch` job's `services:` sidecar container — only override for local runs against a differently-hosted instance. |
 | `FLARESOLVERR_TIMEOUT` | `core/sources/flaresolverr.py` | Seconds to let FlareSolverr spend clearing a single page (its own `maxTimeout`). Defaults to `60`. |
 | `UPLOAD_CONCURRENCY` | `core/release.py` | How many release assets `finalize_release.py` uploads to GitHub at once, instead of one at a time. Defaults to `6`. |
-| `KS_PATH` | `core/apk/patcher.py` | Path to the decoded keystore file; the workflow sets this to `Panemi.keystore` (where the "Setup Keystore" step decodes `KEYSTORE_BASE64` to). |
+| `KS_PATH` | `core/apk/patcher.py` | Path to the decoded keystore file; the workflow sets this to `release.keystore` (where the "Setup Keystore" step decodes `KEYSTORE_BASE64` to). |
 | `KS_PASSWORD` | `core/apk/patcher.py` | From the `KEYSTORE_PASSWORD` secret. |
 | `KS_ALIAS` | `core/apk/patcher.py` | From the `KEY_ALIAS` secret. |
 | `KEY_PASSWORD` | `core/apk/patcher.py` | From the `KEY_PASSWORD` secret. |
@@ -255,3 +256,7 @@ Every environment variable `core/settings.py` reads (matched case-insensitively)
 | `ARTIFACTS_DIR` | `finalize_release.py` | Where downloaded artifacts land; the workflow sets this to `artifacts`. |
 | `NO_COLOR` | `core/log.py` | Set (to anything, including empty) to disable colored console output, per the [no-color.org](https://no-color.org) convention. |
 | `GITHUB_ACTIONS` | `core/log.py` | Set automatically by Actions; switches on GitHub Actions annotation output for warnings/errors. |
+
+## License
+
+[GPL-3.0](LICENSE). If you fork or redistribute this (or a modified version), it stays under the same license.

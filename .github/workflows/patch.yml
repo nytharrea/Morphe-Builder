@@ -9,7 +9,7 @@ jobs:
     timeout-minutes: 15
 
     permissions:
-      contents: write
+      contents: read
 
     outputs:
       release_tag: ${{ steps.release.outputs.tag }}
@@ -20,7 +20,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: main
-          persist-credentials: true
+          persist-credentials: false
 
       - name: Setup Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
@@ -28,23 +28,10 @@ jobs:
           python-version: "3.x"
           check-latest: true
 
-      - name: Install & freeze Python dependencies
+      - name: Install Python dependencies (from lockfile, pinned versions)
         run: |
           python -m pip install --upgrade pip
-          pip install --upgrade -r requirements.txt
-          pip freeze > requirements-lock.txt
-
-      - name: Commit updated lockfile
-        run: |
-          if [ -n "$(git status --porcelain -- requirements-lock.txt)" ]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add requirements-lock.txt
-            git commit -m "chore: update requirements-lock.txt [skip ci]"
-            git push
-          else
-            echo "requirements-lock.txt unchanged, skipping commit."
-          fi
+          pip install -r requirements-lock.txt
 
       - name: Compute release tag
         id: release
@@ -142,7 +129,7 @@ jobs:
 
       - name: Setup Keystore
         run: |
-          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > Panemi.keystore
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > release.keystore
 
       - name: Run script
         run: python -u main.py
@@ -151,7 +138,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           TARGET_APP: ${{ matrix.app }}
-          KS_PATH: "Panemi.keystore"
+          KS_PATH: "release.keystore"
           KS_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KS_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
@@ -213,8 +200,8 @@ jobs:
           python-version: "3.x"
           check-latest: true
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+      - name: Install dependencies (from lockfile, pinned versions)
+        run: pip install -r requirements-lock.txt
 
       - name: Download patched APK artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
@@ -246,5 +233,5 @@ jobs:
       - name: Delete old workflow runs
         uses: Mattraks/delete-workflow-runs@b3018382ca039b53d238908238bd35d1fb14f8ee
         with:
-          retain_days: 0
-          keep_minimum_runs: 1
+          retain_days: 30
+          keep_minimum_runs: 5

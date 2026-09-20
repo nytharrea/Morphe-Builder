@@ -3,13 +3,9 @@ from pathlib import Path
 from curl_cffi.requests import AsyncSession
 
 from .. import log
-from ..http import new_session
-from ..settings import settings
+from ..http import github_headers, new_session
 
-_GH_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Python)",
-    "Authorization": f"Bearer {settings.github_token.get_secret_value()}",
-}
+_GH_HEADERS = github_headers({"User-Agent": "Mozilla/5.0 (Python)"})
 
 DIRECT_REPOS = {
     "inure-github": ("Hamza417", "Inure", "github", "build{version}"),
