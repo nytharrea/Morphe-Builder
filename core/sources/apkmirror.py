@@ -21,7 +21,7 @@ APP_SITES = {
     "twitter": {"org": "x-corp", "slug": "twitter", "release_slug": "x"},
     "instagram": {"org": "instagram", "slug": "instagram"},
     "gboard": {"org": "google-inc", "slug": "gboard", "release_slug": "gboard-the-google-keyboard"},
-    "speedtest": {"org": "ookla", "slug": "speedtest"},
+    "speedtest": {"org": "ookla", "slug": "speedtest", "release_slug": "speedtest-by-ookla"},
     "brave": {"org": "brave-software", "slug": "brave-browser", "release_slug": "brave-private-web-browser-vpn"},
     "proton-vpn": {
         "org": "proton-technologies-ag",
