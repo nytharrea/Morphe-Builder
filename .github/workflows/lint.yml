@@ -30,6 +30,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install --upgrade -r requirements-dev.txt
 
+      - name: Verify requirements-lock.txt installs cleanly
+        run: |
+          python -m venv /tmp/lockcheck
+          /tmp/lockcheck/bin/pip install --quiet -r requirements-lock.txt
+
       - name: Ruff check (lint)
         run: ruff check .
 
