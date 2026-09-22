@@ -1,0 +1,87 @@
+# Every patch bundle the pipeline can pull patches from.
+#
+# Each key is referenced from catalog/apps.yaml's `builds[].patch_sources`
+# list. `owner`/`repo` point at the GitHub repo whose latest (pre)release
+# ships a `.mpp` patch bundle; `label` is the emoji-prefixed name used in
+# release notes and (when an app has more than one build sharing the same
+# display name) to disambiguate the output filename.
+
+morphe:
+  owner: MorpheApp
+  repo: morphe-patches
+  label: "🟢 Morphe"
+
+piko:
+  owner: crimera
+  repo: piko
+  label: "✖️ Piko"
+
+piko-newx:
+  owner: crimera
+  repo: piko-newx
+  label: "🆕 Piko NewX"
+
+adobo:
+  owner: jkennethcarino
+  repo: adobo
+  label: "🥘 Adobo"
+
+rushi:
+  owner: rushiranpise
+  repo: morphe-patches
+  label: "⚡ Rushiranpise"
+
+dh6k:
+  owner: dh6k
+  repo: morphe-patches
+  label: "🦁 dh6k"
+
+hoodles:
+  owner: hoo-dles
+  repo: morphe-patches
+  label: "🍃 hoo-dles"
+
+tiktok:
+  owner: icysymmetra
+  repo: tiktok-patches-for-morphe
+  label: "🎵 TikTok Patches"
+
+hooman:
+  owner: arandomhooman
+  repo: hoomans-morphe-patches
+  label: "🎬 Hooman's Patches"
+
+jasonwu:
+  owner: jasonwu1994
+  repo: Gboard-patches
+  label: "⌨️ JasonWu Gboard"
+
+hxreborn:
+  owner: hxreborn
+  repo: morphe-patches
+  label: "🔥 hxreborn"
+
+hxreborn-tiktok:
+  owner: hxreborn
+  repo: hxreborn-tiktok-patches
+  label: "🔥 hxreborn TikTok"
+
+bluedragon-tiktok:
+  owner: BlueDragon4251
+  repo: tiktok-patches-for-morphe
+  label: "🔷 BlueIT Service"
+
+hushfeed:
+  owner: SysAdminDoc
+  repo: hushfeed
+  label: "🤫 Hushfeed"
+
+kveld-tiktok:
+  owner: kveld9
+  repo: kveld-morphe-patches
+  label: "🌙 Kveld"
+
+heval:
+  owner: heval99
+  repo: Heval-Morphe-Patches
+  label: "💎 Heval"

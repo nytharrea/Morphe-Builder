@@ -1,7 +1,7 @@
 """APK signing-certificate verification.
 
 Pins each app to a known-good certificate SHA-256 fingerprint (recorded in
-data/known_signatures.json) and refuses to continue if a freshly downloaded
+signatures/known_signatures.json) and refuses to continue if a freshly downloaded
 APK's certificate doesn't match that pin - this is what stops a
 compromised/rogue mirror from ever reaching the patch step undetected.
 
@@ -126,9 +126,9 @@ def verify_apk_signature(apk_path: str, app_name: str) -> None:
         raise Exception(
             f"No pinned signature for {app_name} - APK NOT patched/published.\n"
             f"   Computed fingerprint {'was already' if already_pending else 'has been'} recorded in "
-            f"data/pending_signatures.json: {fingerprints[0]}\n"
+            f"signatures/pending_signatures.json: {fingerprints[0]}\n"
             f"   Verify this manually against the developer's official source (Play Store listing, official "
-            f"website, etc.), then add it to data/known_signatures.json. Only then will this app be patchable."
+            f"website, etc.), then add it to signatures/known_signatures.json. Only then will this app be patchable."
         )
 
     if pinned not in fingerprints:

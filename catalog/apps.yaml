@@ -1,0 +1,332 @@
+# Every app the pipeline patches.
+#
+# Top-level key = the app's slug. This is the identity used for signature
+# pinning (signatures/known_signatures.json) and for picking the app's
+# original-APK source below - it is NOT a CI job by itself.
+#
+# `apk_source` says where to download the *original*, unpatched APK from:
+#   type: apkmirror  -> org/slug/release_slug are the path segments
+#                        APKMirror uses, e.g. apkmirror.com/apk/<org>/<slug>/
+#                        `release_slug` is only needed when the release
+#                        page's own URL uses a different word than `slug`
+#                        (e.g. TikTok's folder is "tik-tok-including-
+#                        musical-ly" but its release pages say "tiktok").
+#                        Defaults to `slug` when omitted.
+#   type: github     -> owner/repo is a GitHub repo whose releases ship the
+#                        app directly (no APKMirror/FlareSolverr involved).
+#                        `asset_hint` narrows which release asset to pick
+#                        when a release has more than one .apk/.apkm file.
+#                        `tag_template` is the release tag naming pattern,
+#                        with `{version}` substituted in.
+#
+# `builds` is the list of patched outputs this app produces - almost always
+# one, but an app can have more than one for two different reasons:
+#   - the SAME patch source list is genuinely applied more than once with
+#     different settings (not used today, but supported)
+#   - the same app is patched from DIFFERENT patch sources, each producing
+#     its own separate release asset (reddit/reddit-adobo, the tiktok-*
+#     builds, twitter/twitter-x) - these share this one `apk_source` entry
+#     but are listed as separate `builds`, which is also what keeps each
+#     one a separate GitHub Actions matrix job and a separate signed .apk.
+# A build's `patch_sources` is always a list, even when it has one entry;
+# when it has more than one (e.g. speedtest: [rushi, morphe]), all of them
+# are applied together to produce that single build's one patched APK.
+#
+# Each build's `key` is what identifies it as a CI matrix job, as the
+# TARGET_APP value for a local/manual single-app run, and in the release
+# filename. `display_name` on a build overrides the app's own display_name
+# for that one build (only reddit-adobo and twitter-x need this); leave it
+# out to just inherit the app's display_name.
+
+youtube:
+  pkg: "com.google.android.youtube"
+  display_name: "YouTube"
+  arch: "arm64-v8a"
+  icon: "https://cdn.simpleicons.org/youtube/FF0000"
+  apk_source:
+    type: apkmirror
+    org: "google-inc"
+    slug: "youtube"
+  builds:
+    - key: "youtube"
+      patch_sources: ["morphe"]
+
+youtube-music:
+  pkg: "com.google.android.apps.youtube.music"
+  display_name: "YT.Music"
+  arch: "arm64-v8a"
+  icon: "https://cdn.simpleicons.org/youtubemusic/FF0000"
+  apk_source:
+    type: apkmirror
+    org: "google-inc"
+    slug: "youtube-music"
+  builds:
+    - key: "youtube-music"
+      patch_sources: ["morphe"]
+
+reddit:
+  pkg: "com.reddit.frontpage"
+  display_name: "Reddit"
+  arch: "arm64-v8a"
+  icon: "https://cdn.simpleicons.org/reddit/FF4500"
+  apk_source:
+    type: apkmirror
+    org: "reddit-inc"
+    slug: "reddit"
+  builds:
+    - key: "reddit"
+      patch_sources: ["morphe"]
+      enable: ["Clone app", "Change installer source"]
+    - key: "reddit-adobo"
+      patch_sources: ["adobo"]
+      enable: ["Change package name"]
+      display_name: "Reddit-Adobo"
+
+twitter:
+  pkg: "com.twitter.android"
+  display_name: "Twitter"
+  arch: "arm64-v8a"
+  icon: "https://cdn.simpleicons.org/x/000000"
+  apk_source:
+    type: apkmirror
+    org: "x-corp"
+    slug: "twitter"
+    release_slug: "x"
+  builds:
+    - key: "twitter"
+      patch_sources: ["piko"]
+      exclude: ["Dynamic color"]
+      enable: ["Bring back twitter", "Disunify xchat system", "Export all activities"]
+    - key: "twitter-x"
+      patch_sources: ["piko-newx", "morphe"]
+      force_version: "12.27.0-prod.01"
+      enable: ["Disable Play Store updates"]
+      display_name: "Twitter-X"
+
+instagram:
+  pkg: "com.instagram.android"
+  display_name: "Instagram"
+  arch: "arm64-v8a"
+  icon: "https://cdn.simpleicons.org/instagram/E4405F"
+  apk_source:
+    type: apkmirror
+    org: "instagram"
+    slug: "instagram"
+  builds:
+    - key: "instagram"
+      patch_sources: ["piko"]
+
+gboard:
+  pkg: "com.google.android.inputmethod.latin"
+  display_name: "Gboard"
+  arch: "arm64-v8a"
+  icon: "https://cdn.simpleicons.org/google/4285F4"
+  apk_source:
+    type: apkmirror
+    org: "google-inc"
+    slug: "gboard"
+    release_slug: "gboard-the-google-keyboard"
+  builds:
+    - key: "gboard"
+      patch_sources: ["jasonwu"]
+      exclude:
+        - "Zhuyin Bottom Row Key Sizes"
+        - "Zhuyin Quick Traditional/Simplified Toggle"
+        - "Zhuyin Slide Input"
+
+speedtest:
+  pkg: "org.zwanoo.android.speedtest"
+  display_name: "Speedtest"
+  arch: "arm64-v8a"
+  icon: "https://www.google.com/s2/favicons?sz=128&domain=speedtest.net"
+  apk_source:
+    type: apkmirror
+    org: "ookla"
+    slug: "speedtest"
+    release_slug: "speedtest-by-ookla"
+  builds:
+    - key: "speedtest"
+      patch_sources: ["rushi", "morphe"]
+      enable: ["Disable Play Store updates"]
+
+brave:
+  pkg: "com.brave.browser"
+  display_name: "Brave"
+  arch: "arm64-v8a"
+  icon: "https://cdn.simpleicons.org/brave/FB542B"
+  apk_source:
+    type: apkmirror
+    org: "brave-software"
+    slug: "brave-browser"
+    release_slug: "brave-private-web-browser-vpn"
+  builds:
+    - key: "brave"
+      patch_sources: ["dh6k"]
+      force_version: "1.92.140"
+
+proton-vpn:
+  pkg: "ch.protonvpn.android"
+  display_name: "Proton VPN"
+  arch: "arm64-v8a"
+  icon: "https://cdn.simpleicons.org/protonvpn"
+  apk_source:
+    type: apkmirror
+    org: "proton-technologies-ag"
+    slug: "protonvpn-secure-and-free-vpn"
+    release_slug: "proton-vpn-fast-secure-vpn"
+  builds:
+    - key: "proton-vpn"
+      patch_sources: ["hoodles"]
+
+tiktok:
+  pkg: "com.zhiliaoapp.musically"
+  display_name: "TikTok"
+  arch: "arm64-v8a"
+  icon: "https://cdn.simpleicons.org/tiktok"
+  apk_source:
+    type: apkmirror
+    org: "tiktok-pte-ltd"
+    slug: "tik-tok-including-musical-ly"
+    release_slug: "tiktok"
+  builds:
+    - key: "tiktok"
+      patch_sources: ["tiktok", "morphe"]
+      force_version: "46.2.3"
+      enable: ["Disable Play Store updates"]
+    - key: "tiktok-hxreborn"
+      patch_sources: ["hxreborn-tiktok", "morphe"]
+      force_version: "46.2.3"
+      enable: ["Disable Play Store updates"]
+    - key: "tiktok-bluedragon"
+      patch_sources: ["bluedragon-tiktok", "morphe"]
+      force_version: "46.4.3"
+      enable: ["Disable Play Store updates"]
+    - key: "tiktok-hushfeed"
+      patch_sources: ["hushfeed", "morphe"]
+      force_version: "46.2.3"
+      enable: ["Disable Play Store updates"]
+    - key: "tiktok-kveld"
+      patch_sources: ["kveld-tiktok", "morphe"]
+      force_version: "46.9.3"
+      enable: ["Disable Play Store updates"]
+
+warp:
+  pkg: "com.cloudflare.onedotonedotonedotone"
+  display_name: "1.1.1.1"
+  arch: "arm64-v8a"
+  icon: "https://cdn.simpleicons.org/1dot1dot1dot1"
+  apk_source:
+    type: apkmirror
+    org: "cloudflare"
+    slug: "1-1-1-1-faster-safer-internet"
+    release_slug: "1-1-1-1-warp-safer-internet"
+  builds:
+    - key: "warp"
+      patch_sources: ["rushi"]
+      exclude: ["Disable SSL Pinning"]
+
+inshot:
+  pkg: "com.camerasideas.instashot"
+  display_name: "InShot"
+  arch: "arm64-v8a"
+  icon: "https://www.google.com/s2/favicons?sz=128&domain=inshot.com"
+  apk_source:
+    type: apkmirror
+    org: "inshot-inc"
+    slug: "inshot-video-editor-photo-editor"
+    release_slug: "video-editor-maker-inshot"
+  builds:
+    - key: "inshot"
+      patch_sources: ["hooman"]
+
+google-photos:
+  pkg: "com.google.android.apps.photos"
+  display_name: "Google Photos"
+  arch: "arm64-v8a"
+  icon: "https://cdn.simpleicons.org/googlephotos"
+  apk_source:
+    type: apkmirror
+    org: "google-inc"
+    slug: "photos"
+    release_slug: "google-photos"
+  builds:
+    - key: "google-photos"
+      patch_sources: ["rushi"]
+      enable:
+        - "AMOLED dark theme"
+        - "Change package name"
+        - "Enable DCIM folders backup control"
+        - "Fix DCIM folder classification"
+        - "Spoof features"
+        - "GmsCore support"
+
+inure-github:
+  pkg: "app.simple.inure"
+  display_name: "inure-Github"
+  arch: "arm64-v8a"
+  icon: "https://files.svgcdn.io/arcticons/inure.svg"
+  apk_source:
+    type: github
+    owner: "Hamza417"
+    repo: "Inure"
+    asset_hint: "github"
+    tag_template: "build{version}"
+  builds:
+    - key: "inure-github"
+      patch_sources: ["rushi"]
+
+inure-play:
+  pkg: "app.simple.inure.play"
+  display_name: "inure-PlayStore"
+  arch: "arm64-v8a"
+  icon: "https://files.svgcdn.io/arcticons/inure.svg"
+  apk_source:
+    type: github
+    owner: "Hamza417"
+    repo: "Inure"
+    asset_hint: "play"
+    tag_template: "build{version}"
+  builds:
+    - key: "inure-play"
+      patch_sources: ["rushi"]
+
+proton-pass:
+  pkg: "proton.android.pass"
+  display_name: "Proton Pass"
+  arch: "arm64-v8a"
+  icon: "https://cdn.simpleicons.org/protonpass"
+  apk_source:
+    type: apkmirror
+    org: "proton-technologies-ag"
+    slug: "proton-pass-password-manager"
+  builds:
+    - key: "proton-pass"
+      patch_sources: ["rushi"]
+
+notesnook:
+  pkg: "com.streetwriters.notesnook"
+  display_name: "Notesnook"
+  arch: "arm64-v8a"
+  icon: "https://www.google.com/s2/favicons?sz=128&domain=notesnook.com"
+  apk_source:
+    type: apkmirror
+    org: "streetwriters-private-limited"
+    slug: "notesnook-private-notes-app"
+    release_slug: "notesnook-secure-private-notes"
+  builds:
+    - key: "notesnook"
+      patch_sources: ["hxreborn"]
+
+fairemail:
+  pkg: "eu.faircode.email"
+  display_name: "FairEmail"
+  arch: "arm64-v8a"
+  icon: "https://www.google.com/s2/favicons?sz=128&domain=email.faircode.eu"
+  apk_source:
+    type: apkmirror
+    org: "marcel-bokhorst"
+    slug: "fairemail-open-source-privacy-oriented-email"
+    release_slug: "fairemail-privacy-aware-email"
+  builds:
+    - key: "fairemail"
+      patch_sources: ["heval"]

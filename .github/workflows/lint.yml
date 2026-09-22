@@ -42,7 +42,7 @@ jobs:
         run: ruff format --check .
 
       - name: mypy
-        run: mypy core main.py prepare_release.py finalize_release.py commit_signature.py
+        run: mypy morphe_builder scripts
 
       - name: pytest
         run: pytest -v

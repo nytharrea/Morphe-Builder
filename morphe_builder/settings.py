@@ -6,13 +6,14 @@ calls across a dozen modules. Env vars are matched case-insensitively
 (KS_PATH, ks_path, Ks_Path all bind to `ks_path`), so every existing GitHub
 Actions secret/env name keeps working unchanged.
 
-One shared `settings` singleton is imported by both the core/ library code
-and the top-level scripts (main.py, finalize_release.py, prepare_release.py,
-commit_signature.py) - and those scripts each only need a subset of these
-fields, so nothing here is a required field. Anything that's truly required
-for a given entrypoint (e.g. RELEASE_TAG for finalize_release.py) is checked
-explicitly at the point of use instead, the same way the original code did
-with plain os.environ lookups.
+One shared `settings` singleton is imported by both the morphe_builder/
+library code and the top-level scripts (scripts/patch.py,
+scripts/prepare_release.py, scripts/finalize_release.py,
+scripts/commit_signature.py) - and those scripts each only need a subset of
+these fields, so nothing here is a required field. Anything that's truly
+required for a given entrypoint (e.g. RELEASE_TAG for
+scripts/finalize_release.py) is checked explicitly at the point of use
+instead, the same way the original code did with plain os.environ lookups.
 """
 
 from pathlib import Path
@@ -41,10 +42,18 @@ class Settings(BaseSettings):
 
     flaresolverr_url: str = "http://localhost:8191/v1"
     flaresolverr_timeout: float = 60.0
+    download_timeout: float = 120.0
 
     skip_signature_verify: bool = False
-    known_signatures_path: Path = Field(default_factory=lambda: Path.cwd() / "data" / "known_signatures.json")
-    pending_signatures_path: Path = Field(default_factory=lambda: Path.cwd() / "data" / "pending_signatures.json")
+    known_signatures_path: Path = Field(
+        default_factory=lambda: Path.cwd() / "signatures" / "known_signatures.json"
+    )
+    pending_signatures_path: Path = Field(
+        default_factory=lambda: Path.cwd() / "signatures" / "pending_signatures.json"
+    )
+
+    apps_catalog_path: Path = Field(default_factory=lambda: Path.cwd() / "catalog" / "apps.yaml")
+    patch_sources_catalog_path: Path = Field(default_factory=lambda: Path.cwd() / "catalog" / "patch_sources.yaml")
 
     discord_webhook_url: SecretStr = SecretStr("")
     telegram_bot_token: SecretStr = SecretStr("")

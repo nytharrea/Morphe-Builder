@@ -1,4 +1,4 @@
-from core.sources.apkmirror import (
+from morphe_builder.fetchers.apkmirror import (
     _closest,
     _extract_variant_url,
     _is_404_html,

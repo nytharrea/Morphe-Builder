@@ -3,9 +3,9 @@ from pathlib import Path
 
 from tenacity import retry, stop_after_attempt
 
-from . import log
-from . import retry as retry_conf
-from .http import github_headers, new_session
+from .. import log
+from .. import retry as retry_conf
+from ..http import github_headers, new_session
 
 
 def _select_release(releases: list[dict], match: Callable[[str], bool] | None = None) -> dict | None:

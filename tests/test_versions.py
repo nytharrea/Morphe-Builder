@@ -1,4 +1,4 @@
-from core.apk.versions import extract_cli_versions, pick_latest_version, to_apkmirror_version
+from morphe_builder.apk.versions import extract_cli_versions, pick_latest_version, to_apkmirror_version
 
 
 def test_extract_versions_from_compatible_section():

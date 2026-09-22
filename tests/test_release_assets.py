@@ -1,6 +1,6 @@
 import pytest
 
-from core import patch_tools
+from morphe_builder.fetchers import release_assets
 
 
 def _release(tag, *assets, draft=False):
@@ -20,32 +20,32 @@ def _releases():
 
 
 def test_select_release_skips_newest_release_without_patch_bundle():
-    release = patch_tools._select_release(_releases(), _is_patch_bundle)
+    release = release_assets._select_release(_releases(), _is_patch_bundle)
     assert release is not None
     assert release["tag_name"] == "v3.10.0"
 
 
 def test_select_release_prefers_newest_release_that_has_a_patch_bundle():
     releases = [_release("v4.0.0-dev.1", "patches-4.0.0-dev.1.mpp"), *_releases()]
-    release = patch_tools._select_release(releases, _is_patch_bundle)
+    release = release_assets._select_release(releases, _is_patch_bundle)
     assert release is not None
     assert release["tag_name"] == "v4.0.0-dev.1"
 
 
 def test_select_release_skips_drafts():
     releases = [_release("v9.9.9", "patches-9.9.9.mpp", draft=True), *_releases()]
-    release = patch_tools._select_release(releases, _is_patch_bundle)
+    release = release_assets._select_release(releases, _is_patch_bundle)
     assert release is not None
     assert release["tag_name"] == "v3.10.0"
 
 
 def test_select_release_returns_none_when_nothing_matches():
-    assert patch_tools._select_release(_releases()[:1], _is_patch_bundle) is None
+    assert release_assets._select_release(_releases()[:1], _is_patch_bundle) is None
 
 
 def test_select_release_without_matcher_returns_first_published_release():
     releases = [_release("v9.9.9", draft=True), *_releases()]
-    release = patch_tools._select_release(releases)
+    release = release_assets._select_release(releases)
     assert release is not None
     assert release["tag_name"] == "theme-previews-v1"
 
@@ -75,12 +75,12 @@ class _FakeSession:
 
 
 async def test_fetch_latest_release_prerelease_returns_release_with_patch_bundle(monkeypatch):
-    monkeypatch.setattr(patch_tools, "new_session", lambda **kwargs: _FakeSession(_releases()))
-    release = await patch_tools.fetch_latest_release("owner", "repo", True, _is_patch_bundle)
+    monkeypatch.setattr(release_assets, "new_session", lambda **kwargs: _FakeSession(_releases()))
+    release = await release_assets.fetch_latest_release("owner", "repo", True, _is_patch_bundle)
     assert release["tag_name"] == "v3.10.0"
 
 
 async def test_fetch_latest_release_prerelease_raises_when_no_release_has_patch_bundle(monkeypatch):
-    monkeypatch.setattr(patch_tools, "new_session", lambda **kwargs: _FakeSession(_releases()[:1]))
+    monkeypatch.setattr(release_assets, "new_session", lambda **kwargs: _FakeSession(_releases()[:1]))
     with pytest.raises(RuntimeError, match="owner/repo"):
-        await patch_tools.fetch_latest_release("owner", "repo", True, _is_patch_bundle)
+        await release_assets.fetch_latest_release("owner", "repo", True, _is_patch_bundle)

@@ -3,15 +3,17 @@ from collections.abc import Callable
 from pathlib import Path
 
 from . import log
-from .http import new_session
-from .patch_tools import download_latest_github_asset
+from .fetchers.release_assets import download_latest_github_asset
+from .http import github_headers, new_session
 from .settings import settings
 
-HEADERS = {
-    "User-Agent": "python",
-    "Authorization": f"Bearer {settings.github_token.get_secret_value()}",
-    "Accept": "application/vnd.github+json",
-}
+
+def _headers() -> dict[str, str]:
+    """Built fresh per-call (not a module-level constant) so it always
+    reflects the current settings.github_token, and reuses http.py's
+    github_headers() so a missing token omits Authorization entirely
+    instead of sending a malformed empty "Bearer " value."""
+    return github_headers({"User-Agent": "python", "Accept": "application/vnd.github+json"})
 
 
 def _assert_configured():
@@ -28,7 +30,7 @@ async def create_new_release(tag: str, release_name: str, release_body: str = ""
     async with new_session(timeout=30) as client:
         res = await client.post(
             f"https://api.github.com/repos/{settings.github_repository}/releases",
-            headers=HEADERS,
+            headers=_headers(),
             json={
                 "tag_name": tag,
                 "name": release_name,
@@ -50,7 +52,7 @@ async def list_releases() -> list[dict]:
     async with new_session(timeout=30) as client:
         res = await client.get(
             f"https://api.github.com/repos/{settings.github_repository}/releases",
-            headers=HEADERS,
+            headers=_headers(),
             params={"per_page": 100},
         )
         data = res.json()
@@ -65,7 +67,7 @@ async def delete_release(release_id: int) -> None:
     async with new_session(timeout=30) as client:
         await client.delete(
             f"https://api.github.com/repos/{settings.github_repository}/releases/{release_id}",
-            headers=HEADERS,
+            headers=_headers(),
         )
 
 
@@ -73,7 +75,7 @@ async def delete_tag(tag: str) -> None:
     async with new_session(timeout=30) as client:
         await client.delete(
             f"https://api.github.com/repos/{settings.github_repository}/git/refs/tags/{tag}",
-            headers=HEADERS,
+            headers=_headers(),
         )
 
 
@@ -92,7 +94,7 @@ async def update_release_body(release_id: int, body: str) -> dict:
     async with new_session(timeout=30) as client:
         res = await client.patch(
             f"https://api.github.com/repos/{settings.github_repository}/releases/{release_id}",
-            headers=HEADERS,
+            headers=_headers(),
             json={"body": body},
         )
         return res.json()
@@ -102,7 +104,7 @@ async def get_assets(release_id: int) -> list[dict]:
     async with new_session(timeout=30) as client:
         res = await client.get(
             f"https://api.github.com/repos/{settings.github_repository}/releases/{release_id}/assets",
-            headers=HEADERS,
+            headers=_headers(),
         )
         return res.json()
 
@@ -111,7 +113,7 @@ async def delete_asset(asset_id: int):
     async with new_session(timeout=30) as client:
         await client.delete(
             f"https://api.github.com/repos/{settings.github_repository}/releases/assets/{asset_id}",
-            headers=HEADERS,
+            headers=_headers(),
         )
 
 
@@ -130,7 +132,7 @@ async def _upload(upload_url: str, file_path: str) -> dict:
         res = await client.post(
             url,
             headers={
-                **HEADERS,
+                **_headers(),
                 "Content-Type": "application/vnd.android.package-archive",
             },
             content=_iter_file_chunks(file_path),

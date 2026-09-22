@@ -1,7 +1,7 @@
 import pytest
 from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt
 
-from core import retry
+from morphe_builder import retry
 
 
 def test_incrementing_and_exponential_return_wait_strategies():
@@ -32,7 +32,7 @@ class _FakeRetryState:
 
 def test_before_sleep_logs_label_attempt_error_and_delay(monkeypatch):
     messages = []
-    monkeypatch.setattr("core.retry.log.notice", messages.append)
+    monkeypatch.setattr("morphe_builder.retry.log.notice", messages.append)
 
     hook = retry.before_sleep("Some flaky operation")
     hook(_FakeRetryState(attempt_number=2, exc=RuntimeError("boom"), sleep=3.25))

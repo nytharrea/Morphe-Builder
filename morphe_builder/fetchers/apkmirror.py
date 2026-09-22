@@ -2,6 +2,7 @@ import asyncio
 import re
 import time
 from pathlib import Path
+from typing import NotRequired, TypedDict
 from urllib.parse import urljoin
 
 import lxml.html
@@ -14,44 +15,17 @@ from ..apk.versions import to_apkmirror_version
 from . import flaresolverr
 from .flaresolverr import Cleared, FlareSolverrError
 
-APP_SITES = {
-    "youtube": {"org": "google-inc", "slug": "youtube"},
-    "youtube-music": {"org": "google-inc", "slug": "youtube-music"},
-    "reddit": {"org": "reddit-inc", "slug": "reddit"},
-    "twitter": {"org": "x-corp", "slug": "twitter", "release_slug": "x"},
-    "instagram": {"org": "instagram", "slug": "instagram"},
-    "gboard": {"org": "google-inc", "slug": "gboard", "release_slug": "gboard-the-google-keyboard"},
-    "speedtest": {"org": "ookla", "slug": "speedtest", "release_slug": "speedtest-by-ookla"},
-    "brave": {"org": "brave-software", "slug": "brave-browser", "release_slug": "brave-private-web-browser-vpn"},
-    "proton-vpn": {
-        "org": "proton-technologies-ag",
-        "slug": "protonvpn-secure-and-free-vpn",
-        "release_slug": "proton-vpn-fast-secure-vpn",
-    },
-    "tiktok": {"org": "tiktok-pte-ltd", "slug": "tik-tok-including-musical-ly", "release_slug": "tiktok"},
-    "warp": {
-        "org": "cloudflare",
-        "slug": "1-1-1-1-faster-safer-internet",
-        "release_slug": "1-1-1-1-warp-safer-internet",
-    },
-    "inshot": {
-        "org": "inshot-inc",
-        "slug": "inshot-video-editor-photo-editor",
-        "release_slug": "video-editor-maker-inshot",
-    },
-    "google-photos": {"org": "google-inc", "slug": "photos", "release_slug": "google-photos"},
-    "proton-pass": {"org": "proton-technologies-ag", "slug": "proton-pass-password-manager"},
-    "notesnook": {
-        "org": "streetwriters-private-limited",
-        "slug": "notesnook-private-notes-app",
-        "release_slug": "notesnook-secure-private-notes",
-    },
-    "fairemail": {
-        "org": "marcel-bokhorst",
-        "slug": "fairemail-open-source-privacy-oriented-email",
-        "release_slug": "fairemail-privacy-aware-email",
-    },
-}
+
+class ApkMirrorSite(TypedDict):
+    """The org/slug/release_slug an app's `apk_source` carries in
+    catalog/apps.yaml (type: apkmirror) - this module doesn't read the
+    catalog itself, so every function below takes one of these as a plain
+    parameter instead of looking an app name up in a hardcoded table."""
+
+    org: str
+    slug: str
+    release_slug: NotRequired[str]
+
 
 DIAGNOSTICS_DIR = Path(__file__).resolve().parent.parent.parent / "diagnostics"
 
@@ -254,7 +228,7 @@ def _has_download_button(tree: lxml.html.HtmlElement | None) -> bool:
     return any("downloadButton" in _classes(a) for a in tree.iter("a"))
 
 
-def _extract_variant_url(tree: lxml.html.HtmlElement | None, force_build: str | None, app_name: str) -> str | None:
+def _extract_variant_url(tree: lxml.html.HtmlElement | None, force_build: str | None, app_slug: str) -> str | None:
     candidates: list[str | None] = [None] * 6
 
     for row in _variant_rows(tree):
@@ -273,7 +247,7 @@ def _extract_variant_url(tree: lxml.html.HtmlElement | None, force_build: str | 
         badge_text = _cell_text(badge).upper()
         is_bundle = "BUNDLE" in badge_text or "PAKET" in badge_text
 
-        if app_name == "instagram" and not is_bundle:
+        if app_slug == "instagram" and not is_bundle:
             continue
 
         arch_text = _cell_text(cells[1]).lower()
@@ -332,10 +306,10 @@ def _find_listing_link(tree: lxml.html.HtmlElement, base_url: str, slug_part: st
     return None
 
 
-async def _resolve_list_url(app_config: dict, version: str) -> tuple[str, bool]:
+async def _resolve_list_url(site: ApkMirrorSite, version: str) -> tuple[str, bool]:
     version_slug = to_apkmirror_version(version)
-    name_part = app_config.get("release_slug") or app_config["slug"]
-    folder_url = f"https://www.apkmirror.com/apk/{app_config['org']}/{app_config['slug']}"
+    name_part = site.get("release_slug") or site["slug"]
+    folder_url = f"https://www.apkmirror.com/apk/{site['org']}/{site['slug']}"
     deadline = time.monotonic() + RESOLVE_BUDGET_SECONDS
 
     release_slugs = [
@@ -369,7 +343,7 @@ async def _resolve_list_url(app_config: dict, version: str) -> tuple[str, bool]:
 
     if time.monotonic() > deadline:
         raise RuntimeError(
-            f"Giving up on {app_config['slug']} v{version}: APKMirror kept challenge-walling every "
+            f"Giving up on {site['slug']} v{version}: APKMirror kept challenge-walling every "
             f"attempt (exceeded {RESOLVE_BUDGET_SECONDS:.0f}s resolve budget)"
         )
 
@@ -388,7 +362,7 @@ async def _resolve_list_url(app_config: dict, version: str) -> tuple[str, bool]:
             return found_url, False
 
     if last_cleared is not None:
-        await _save_diagnostic_html(last_cleared.html, f"no-match-{app_config['slug']}")
+        await _save_diagnostic_html(last_cleared.html, f"no-match-{site['slug']}")
     raise RuntimeError(f"No APKMirror release page found for version {version}")
 
 
@@ -412,27 +386,23 @@ async def _resolve_download_url(variant_url: str, variant_cleared: Cleared) -> t
     return confirm_url, confirm_cleared
 
 
-async def download_apk(version: str, app_name: str = "youtube", force_build: str | None = None) -> str:
-    app_config = APP_SITES.get(app_name)
-    if not app_config:
-        raise RuntimeError(f'Unknown appName "{app_name}" - not found in APP_SITES')
-
+async def download_apk(version: str, app_slug: str, site: ApkMirrorSite, force_build: str | None = None) -> str:
     out_dir = Path(__file__).resolve().parent.parent.parent / "downloads"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    list_url, is_final = await _resolve_list_url(app_config, version)
+    list_url, is_final = await _resolve_list_url(site, version)
     log.info(f"LIST: {list_url}")
 
     if is_final:
         variant_url = list_url
         log.info(f"VARIANT: {variant_url} (single-variant release)")
     else:
-        listing_base = f"https://www.apkmirror.com/apk/{app_config['org']}/{app_config['slug']}/"
+        listing_base = f"https://www.apkmirror.com/apk/{site['org']}/{site['slug']}/"
         variant_url = None
         for attempt in range(4):
             cleared = await _fetch(list_url, label="list-page")
             tree = _parse(cleared.html)
-            found = _extract_variant_url(tree, force_build, app_name) if tree is not None else None
+            found = _extract_variant_url(tree, force_build, app_slug) if tree is not None else None
             variant_url = _abs_url(listing_base, found) if found else None
             if variant_url:
                 break
@@ -440,7 +410,7 @@ async def download_apk(version: str, app_name: str = "youtube", force_build: str
             _dump_variant_rows_for_debug(tree)
 
         if not variant_url:
-            await _save_diagnostic_html(cleared.html, f"no-variant-{app_name}")
+            await _save_diagnostic_html(cleared.html, f"no-variant-{app_slug}")
             raise RuntimeError("No matching variant found on APKMirror")
         log.info(f"VARIANT: {variant_url}")
 
@@ -470,7 +440,7 @@ async def download_apk(version: str, app_name: str = "youtube", force_build: str
                 log.download(f"Downloading: {file_url}")
                 try:
                     candidate_path = await flaresolverr.download_file(
-                        file_url, cleared_for_cookies, out_dir, f"{app_name}.apk"
+                        file_url, cleared_for_cookies, out_dir, f"{app_slug}.apk"
                     )
                 except FlareSolverrError as e:
                     last_error = e
@@ -488,7 +458,7 @@ async def download_apk(version: str, app_name: str = "youtube", force_build: str
 
     if final_path is None:
         if last_variant_cleared is not None:
-            await _save_diagnostic_html(last_variant_cleared.html, f"no-download-{app_name}")
+            await _save_diagnostic_html(last_variant_cleared.html, f"no-download-{app_slug}")
         raise last_error or RuntimeError("Download did not start / file not detected.")
 
     log.success(f"DONE: {final_path} ({final_path.stat().st_size / 1024 / 1024:.2f} MB)")
@@ -521,12 +491,8 @@ def _listing_candidates(tree: lxml.html.HtmlElement, base_url: str) -> list[tupl
     return results
 
 
-async def get_latest_listing(app_name: str) -> dict | None:
-    app_config = APP_SITES.get(app_name)
-    if not app_config:
-        raise RuntimeError(f'Unknown appName "{app_name}" - not found in APP_SITES')
-
-    listing_url = f"https://www.apkmirror.com/apk/{app_config['org']}/{app_config['slug']}/"
+async def get_latest_listing(app_slug: str, site: ApkMirrorSite) -> dict | None:
+    listing_url = f"https://www.apkmirror.com/apk/{site['org']}/{site['slug']}/"
     log.info(f"LISTING: {listing_url}")
 
     cleared: Cleared | None = None
@@ -541,7 +507,7 @@ async def get_latest_listing(app_name: str) -> dict | None:
 
     if not candidates:
         if cleared is not None:
-            await _save_diagnostic_html(cleared.html, f"no-listing-{app_name}")
+            await _save_diagnostic_html(cleared.html, f"no-listing-{app_slug}")
         return None
 
     for href, text in candidates:
@@ -553,5 +519,5 @@ async def get_latest_listing(app_name: str) -> dict | None:
             return {"version": version, "href": href}
 
     if cleared is not None:
-        await _save_diagnostic_html(cleared.html, f"no-version-{app_name}")
+        await _save_diagnostic_html(cleared.html, f"no-version-{app_slug}")
     return None

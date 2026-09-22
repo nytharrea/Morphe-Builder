@@ -1,16 +1,26 @@
 from pathlib import Path
+from typing import NotRequired, TypedDict
 
 from curl_cffi.requests import AsyncSession
 
 from .. import log
 from ..http import github_headers, new_session
 
-_GH_HEADERS = github_headers({"User-Agent": "Mozilla/5.0 (Python)"})
 
-DIRECT_REPOS = {
-    "inure-github": ("Hamza417", "Inure", "github", "build{version}"),
-    "inure-play": ("Hamza417", "Inure", "play", "build{version}"),
-}
+class GithubAppSite(TypedDict):
+    """The owner/repo (+ optional asset_hint/tag_template) an app's
+    `apk_source` carries in catalog/apps.yaml (type: github) - this module
+    doesn't read the catalog itself, so every function below takes one of
+    these as a plain parameter instead of looking an app name up in a
+    hardcoded table."""
+
+    owner: str
+    repo: str
+    asset_hint: NotRequired[str]
+    tag_template: NotRequired[str]
+
+
+_GH_HEADERS = github_headers({"User-Agent": "Mozilla/5.0 (Python)"})
 
 
 def _build_tag(tag_template: str, version: str) -> str:
@@ -59,11 +69,11 @@ async def _download_asset(client: AsyncSession, asset: dict) -> str:
     return str(file_path)
 
 
-async def download_apk(version: str, app_name: str, force_build: str | None = None) -> str:
-    if app_name not in DIRECT_REPOS:
-        raise RuntimeError(f'No GitHub repo configured for "{app_name}".')
-
-    owner, repo, name_hint, tag_template = DIRECT_REPOS[app_name]
+async def download_apk(version: str, app_slug: str, source: GithubAppSite, force_build: str | None = None) -> str:
+    owner = source["owner"]
+    repo = source["repo"]
+    name_hint = source.get("asset_hint")
+    tag_template = source.get("tag_template") or "{version}"
 
     async with new_session(timeout=30, follow_redirects=True) as client:
         release_data = None
@@ -71,7 +81,7 @@ async def download_apk(version: str, app_name: str, force_build: str | None = No
 
         if version and version != "latest":
             wanted_tag = _build_tag(tag_template, version)
-            log.step(f"Fetching info from GitHub: {app_name.upper()} ({owner}/{repo}, tag: {wanted_tag})")
+            log.step(f"Fetching info from GitHub: {app_slug.upper()} ({owner}/{repo}, tag: {wanted_tag})")
 
             api_url = f"https://api.github.com/repos/{owner}/{repo}/releases/tags/{wanted_tag}"
             res = await client.get(api_url, headers=_GH_HEADERS)
@@ -81,7 +91,7 @@ async def download_apk(version: str, app_name: str, force_build: str | None = No
                 log.warn(f'Tag "{wanted_tag}" not found ({res.status_code}), falling back to latest release.')
 
         if release_data is None:
-            log.step(f"Fetching info from GitHub: {app_name.upper()} ({owner}/{repo}, latest release)")
+            log.step(f"Fetching info from GitHub: {app_slug.upper()} ({owner}/{repo}, latest release)")
             api_url = f"https://api.github.com/repos/{owner}/{repo}/releases/latest"
             res = await client.get(api_url, headers=_GH_HEADERS)
             if res.status_code >= 400:
@@ -96,9 +106,5 @@ async def download_apk(version: str, app_name: str, force_build: str | None = No
         return await _download_asset(client, asset)
 
 
-async def get_latest_listing(app_name: str) -> dict:
-    if app_name not in DIRECT_REPOS:
-        raise RuntimeError(f'No GitHub repo configured for "{app_name}".')
-
-    owner, repo, _name_hint, _tag_template = DIRECT_REPOS[app_name]
-    return {"version": "latest", "href": f"https://github.com/{owner}/{repo}/releases/latest"}
+async def get_latest_listing(app_slug: str, source: GithubAppSite) -> dict:
+    return {"version": "latest", "href": f"https://github.com/{source['owner']}/{source['repo']}/releases/latest"}

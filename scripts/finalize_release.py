@@ -1,24 +1,32 @@
-import asyncio
+"""Entry point for the `finalize` job: matches the `patch` job's uploaded
+.apk artifacts back to their build via catalog/apps.yaml's naming rules,
+then publishes (or updates) the one GitHub Release. Run as
+`python scripts/finalize_release.py` from the repo root."""
+
+import sys
 from pathlib import Path
 
-from core import log, notify
-from core.config import APPS_CONFIG, PATCH_SOURCES, PROCESS_ORDER, get_release_naming, patch_sources_for
-from core.patch_tools import download_latest_github_asset
-from core.release import (
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import asyncio
+
+from morphe_builder import catalog, log, notify
+from morphe_builder.fetchers.release_assets import download_latest_github_asset
+from morphe_builder.release import (
     create_new_release,
     delete_other_releases,
     upload_microg_once,
     upload_patched_apks,
     upload_pothelper_once,
 )
-from core.settings import settings
+from morphe_builder.settings import settings
 
 
 def _build_asset_candidates() -> list[tuple[str, str, str | None]]:
     candidates = []
-    for app_key in APPS_CONFIG:
-        display_name, tag = get_release_naming(app_key)
-        candidates.append((app_key, display_name, tag))
+    for build_key in catalog.BUILDS:
+        display_name, tag = catalog.get_release_naming(build_key)
+        candidates.append((build_key, display_name, tag))
     candidates.sort(key=lambda c: -len(c[1]))
     return candidates
 
@@ -36,7 +44,7 @@ def match_asset(file_name: str):
 
     base = file_name[:-4]
 
-    for app_key, display_name, tag in _ASSET_CANDIDATES:
+    for build_key, display_name, tag in _ASSET_CANDIDATES:
         prefix = display_name + "-"
         if not base.lower().startswith(prefix.lower()):
             continue
@@ -49,7 +57,7 @@ def match_asset(file_name: str):
                 continue
             remainder = remainder[: -len(suffix)]
 
-        return app_key, display_name, remainder
+        return build_key, display_name, remainder
 
     return None
 
@@ -61,10 +69,10 @@ def find_patched_apks(artifacts_dir: Path):
     for apk_path in sorted(artifacts_dir.rglob("*.apk")):
         result = match_asset(apk_path.name)
         if result:
-            app_key, display_name, version = result
+            build_key, display_name, version = result
             matched.append(
                 {
-                    "app_key": app_key,
+                    "build_key": build_key,
                     "display_name": display_name,
                     "version": version,
                     "path": str(apk_path),
@@ -92,8 +100,8 @@ async def main():
 
     log.info(f"Matched {len(matched)} app asset(s).")
 
-    succeeded_keys = {apk["app_key"] for apk in matched}
-    failed_keys = [key for key in PROCESS_ORDER if key not in succeeded_keys]
+    succeeded_keys = {apk["build_key"] for apk in matched}
+    failed_keys = [key for key in catalog.BUILDS if key not in succeeded_keys]
 
     if not matched:
         log.error("No apps patched successfully in this run, skipping release creation.")
@@ -102,21 +110,22 @@ async def main():
 
     body = "### Latest Patched APKs\n\n"
     for apk in matched:
-        icon = APPS_CONFIG[apk["app_key"]]["icon"]
+        icon = catalog.BUILDS[apk["build_key"]]["icon"]
         body += f'* <img src="{icon}" width="16" height="16"> **{apk["display_name"]}** - `{apk["version"]}`\n'
 
     body += "\n---\n\n"
 
     used_sources: set[str] = set()
     for apk in matched:
-        used_sources.update(patch_sources_for(apk["app_key"]))
+        used_sources.update(catalog.patch_sources_for(apk["build_key"]))
 
     async def _fetch_release_notes(key: str) -> str:
-        owner, repo, label = PATCH_SOURCES[key]
+        source = catalog.PATCH_SOURCES[key]
+        label = source["label"]
         try:
             asset = await download_latest_github_asset(
-                owner=owner,
-                repo=repo,
+                owner=source["owner"],
+                repo=source["repo"],
                 prerelease=True,
                 match=lambda n: n.endswith(".mpp"),
             )
@@ -128,7 +137,7 @@ async def main():
             log.warn(f"Could not fetch release notes for {label}: {e}")
             return ""
 
-    source_keys = [key for key in sorted(used_sources) if key in PATCH_SOURCES]
+    source_keys = [key for key in sorted(used_sources) if key in catalog.PATCH_SOURCES]
     body += "".join(await asyncio.gather(*(_fetch_release_notes(key) for key in source_keys)))
 
     log.step(f"Creating release: {release_tag}")
@@ -138,7 +147,7 @@ async def main():
     log.step(f"Uploading {len(matched)} patched APK(s) (up to {settings.upload_concurrency} at once)...")
     await upload_patched_apks(release, [apk["path"] for apk in matched])
 
-    if any(apk["app_key"] in ("youtube", "youtube-music") for apk in matched):
+    if any(apk["build_key"] in ("youtube", "youtube-music") for apk in matched):
         await asyncio.gather(upload_microg_once(release), upload_pothelper_once(release))
 
     log.success("All apps successfully published under one release!")

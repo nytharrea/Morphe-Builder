@@ -1,5 +1,5 @@
 [project]
-name = "builder-morphe"
+name = "morphe-builder"
 version = "0.1.0"
 description = "Android APK patching automation pipeline (scrape, patch, sign, release) driven by GitHub Actions"
 requires-python = ">=3.12"
@@ -26,6 +26,11 @@ ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["E501"]
+# scripts/*.py insert the repo root onto sys.path before importing
+# morphe_builder (a sibling directory, not an installed package) - that
+# statement has to run before those imports, which ruff's import-order
+# check (E402) would otherwise flag.
+"scripts/*" = ["E402"]
 
 [tool.mypy]
 python_version = "3.12"

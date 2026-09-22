@@ -12,8 +12,9 @@ jobs:
       contents: read
 
     outputs:
-      release_tag: ${{ steps.release.outputs.tag }}
-      release_name: ${{ steps.release.outputs.name }}
+      release_tag: ${{ steps.plan.outputs.tag }}
+      release_name: ${{ steps.plan.outputs.name }}
+      build_matrix: ${{ steps.plan.outputs.matrix }}
 
     steps:
       - name: Checkout
@@ -33,9 +34,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-lock.txt
 
-      - name: Compute release tag
-        id: release
-        run: python prepare_release.py
+      - name: Validate catalog and compute release plan
+        id: plan
+        run: python scripts/prepare_release.py
 
   patch:
     needs: prepare
@@ -53,31 +54,7 @@ jobs:
       fail-fast: false
       max-parallel: 30
       matrix:
-        app:
-          - youtube
-          - youtube-music
-          - reddit
-          - reddit-adobo
-          - twitter
-          - twitter-x
-          - instagram
-          - gboard
-          - speedtest
-          - brave
-          - proton-vpn
-          - tiktok
-          - tiktok-hxreborn
-          - tiktok-bluedragon
-          - tiktok-hushfeed
-          - tiktok-kveld
-          - warp
-          - inshot
-          - google-photos
-          - inure-github
-          - inure-play
-          - proton-pass
-          - notesnook
-          - fairemail
+        app: ${{ fromJson(needs.prepare.outputs.build_matrix) }}
 
     services:
       flaresolverr:
@@ -131,8 +108,8 @@ jobs:
         run: |
           echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > release.keystore
 
-      - name: Run script
-        run: python -u main.py
+      - name: Run patch pipeline
+        run: python -u scripts/patch.py
         env:
           PYTHONUNBUFFERED: "1"
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -165,9 +142,9 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      - name: Commit updated signature files
+      - name: Commit signature record if new
         if: always()
-        run: python commit_signature.py "${{ matrix.app }}"
+        run: python scripts/commit_signature.py "${{ matrix.app }}"
 
       - name: Generate build provenance attestation
         if: ${{ hashFiles('dist/*.apk') != '' }}
@@ -211,7 +188,7 @@ jobs:
           merge-multiple: true
 
       - name: Create release and clean up old releases
-        run: python finalize_release.py
+        run: python scripts/finalize_release.py
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
