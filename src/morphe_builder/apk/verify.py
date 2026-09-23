@@ -36,6 +36,10 @@ from .. import log
 from ..settings import settings
 
 
+class SignatureError(Exception):
+    pass
+
+
 def _load_json(path: Path) -> dict:
     if path.exists():
         try:
@@ -67,7 +71,7 @@ def get_apk_certificate_fingerprints(apk_path: str) -> list[str]:
     certs = apk.get_certificates()
 
     if not certs:
-        raise Exception(f"androguard found no signing certificate in {apk_path} - is it actually signed?")
+        raise SignatureError(f"androguard found no signing certificate in {apk_path} - is it actually signed?")
 
     return [hashlib.sha256(_cert_der_bytes(cert)).hexdigest() for cert in certs]
 
@@ -76,7 +80,7 @@ def _resolve_verifiable_apk(path: str) -> tuple[str, str | None]:
     if not zipfile.is_zipfile(path):
         if path.lower().endswith(".apk"):
             return path, None
-        raise Exception(
+        raise SignatureError(
             f"{Path(path).name} is neither a single .apk nor a ZIP-based bundle (.apkm/.xapk) - cannot verify."
         )
 
@@ -90,7 +94,7 @@ def _resolve_verifiable_apk(path: str) -> tuple[str, str | None]:
         if not candidates:
             candidates = [n for n in names if n.endswith(".apk")]
         if not candidates:
-            raise Exception(f"No verifiable .apk found inside {Path(path).name}.")
+            raise SignatureError(f"No verifiable .apk found inside {Path(path).name}.")
 
         base_name = candidates[0]
         temp_dir = tempfile.mkdtemp(prefix="apkm_verify_")
@@ -123,7 +127,7 @@ def verify_apk_signature(apk_path: str, app_name: str) -> None:
         pending[app_name] = fingerprints[0]
         _save_json(settings.pending_signatures_path, pending)
 
-        raise Exception(
+        raise SignatureError(
             f"No pinned signature for {app_name} - APK NOT patched/published.\n"
             f"   Computed fingerprint {'was already' if already_pending else 'has been'} recorded in "
             f"signatures/pending_signatures.json: {fingerprints[0]}\n"
@@ -132,7 +136,7 @@ def verify_apk_signature(apk_path: str, app_name: str) -> None:
         )
 
     if pinned not in fingerprints:
-        raise Exception(
+        raise SignatureError(
             f"SIGNATURE MISMATCH: expected certificate fingerprint for {app_name} is "
             f"{pinned}, but the downloaded APK's certificate is {fingerprints}. "
             f"This may indicate the APK came from an unexpected/untrusted source. "

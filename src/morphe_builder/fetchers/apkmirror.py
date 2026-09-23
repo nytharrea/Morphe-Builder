@@ -1,18 +1,52 @@
-import asyncio
+"""Downloads apps from apkmirror.com: resolves an app+version to the right
+release page, works through APKMirror's variant-row -> download-button ->
+confirm-page -> final-file hop, and streams the file to disk - retrying
+through Cloudflare challenges (apkmirror_challenge.py) as it goes and using
+apkmirror_parse.py to make sense of each page's HTML along the way.
+
+Public API: close_session, download_apk, get_latest_listing, ApkMirrorSite.
+Everything else here is orchestration private to this module.
+"""
+
 import re
 import time
 from pathlib import Path
 from typing import NotRequired, TypedDict
-from urllib.parse import urljoin
 
-import lxml.html
 from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt
-from tenacity.stop import stop_base
-from tenacity.wait import wait_base
 
-from .. import log
+from .. import log, paths
 from ..apk.versions import to_apkmirror_version
 from . import flaresolverr
+from .apkmirror_challenge import (
+    BudgetExceeded as _BudgetExceeded,
+)
+from .apkmirror_challenge import (
+    ChallengeCooldownWait as _ChallengeCooldownWait,
+)
+from .apkmirror_challenge import (
+    ChallengePresent as _ChallengePresent,
+)
+from .apkmirror_challenge import apply_global_cooldown as _apply_global_cooldown
+from .apkmirror_challenge import challenge_hits
+from .apkmirror_challenge import looks_like_challenge as _looks_like_challenge_impl
+from .apkmirror_challenge import register_challenge as _register_challenge
+from .apkmirror_parse import abs_url as _abs_url
+from .apkmirror_parse import classes as _classes
+from .apkmirror_parse import closest as _closest  # noqa: F401 - re-exported, test_apkmirror.py imports it directly
+from .apkmirror_parse import dump_variant_rows_for_debug as _dump_variant_rows_for_debug
+from .apkmirror_parse import extract_variant_url as _extract_variant_url
+from .apkmirror_parse import find_listing_link as _find_listing_link
+from .apkmirror_parse import has_download_button as _has_download_button
+from .apkmirror_parse import is_404_html as _is_404_html
+from .apkmirror_parse import listing_candidates as _listing_candidates
+from .apkmirror_parse import page_text as _page_text
+from .apkmirror_parse import parse as _parse
+from .apkmirror_parse import row_count as _row_count
+from .apkmirror_parse import (
+    variant_rows as _variant_rows,  # noqa: F401 - re-exported, test_apkmirror.py imports it directly
+)
+from .apkmirror_parse import version_from_href as _version_from_href
 from .flaresolverr import Cleared, FlareSolverrError
 
 
@@ -27,124 +61,25 @@ class ApkMirrorSite(TypedDict):
     release_slug: NotRequired[str]
 
 
-DIAGNOSTICS_DIR = Path(__file__).resolve().parent.parent.parent / "diagnostics"
-
 RESOLVE_BUDGET_SECONDS = 300.0
 
-_ALLOWED_ARCHS = [
-    "universal",
-    "evrensel",
-    "noarch",
-    "arm64-v8a",
-    "arm64-v8a + armeabi-v7a",
-    "arm64-v8a + armeabi",
-]
 
-_CHALLENGE_MARKERS = [
-    "just a moment",
-    "checking your browser",
-    "attention required! | cloudflare",
-    "verify you are human",
-    "cf-browser-verification",
-    "cf_chl_",
-    "ddos protection by cloudflare",
-    "performing security verification",
-    "verifies you are not a bot",
-]
-
-_challenge_hits = 0
-_cooldown_until = 0.0
+def _looks_like_challenge(html: str) -> bool:
+    """apkmirror_challenge.looks_like_challenge() takes a page-text
+    function as a parameter so that module never has to import this one;
+    this is that function, supplied here where both pieces are in scope."""
+    return _looks_like_challenge_impl(html, lambda h: _page_text(_parse(h), 500))
 
 
 async def close_session() -> None:
     await flaresolverr.close_session()
 
 
-async def _apply_global_cooldown() -> None:
-    now = time.monotonic()
-    if now < _cooldown_until:
-        remaining = _cooldown_until - now
-        log.wait(f"Global cooldown active, waiting {remaining:.0f}s...")
-        await asyncio.sleep(remaining)
-
-
-class _ChallengePresent(Exception):
-    """Raised internally when a fetched page is still a Cloudflare
-    challenge (or FlareSolverr couldn't clear it). Carries the escalated
-    cooldown so the wait/stop strategies below don't have to recompute
-    (and re-escalate) it themselves."""
-
-    def __init__(self, cooldown: float):
-        super().__init__("Cloudflare challenge page detected")
-        self.cooldown = cooldown
-
-
-def _register_challenge() -> float:
-    global _challenge_hits, _cooldown_until
-    _challenge_hits += 1
-    cooldown = min(15.0 * (2 ** (_challenge_hits - 1)), 120.0)
-    _cooldown_until = time.monotonic() + cooldown
-    return cooldown
-
-
-class _ChallengeCooldownWait(wait_base):
-    def __call__(self, retry_state) -> float:
-        exc = retry_state.outcome.exception() if retry_state.outcome else None
-        return exc.cooldown if isinstance(exc, _ChallengePresent) else 0.0
-
-
-class _BudgetExceeded(stop_base):
-    def __init__(self, deadline: float | None):
-        self.deadline = deadline
-
-    def __call__(self, retry_state) -> bool:
-        if self.deadline is None or retry_state.outcome is None:
-            return False
-        exc = retry_state.outcome.exception()
-        cooldown = exc.cooldown if isinstance(exc, _ChallengePresent) else 0.0
-        return time.monotonic() + cooldown >= self.deadline
-
-
-def _parse(html: str) -> lxml.html.HtmlElement | None:
-    if not html:
-        return None
-    try:
-        return lxml.html.fromstring(html)
-    except Exception:
-        return None
-
-
-def _abs_url(base: str, href: str | None) -> str | None:
-    return urljoin(base, href) if href else None
-
-
-def _page_text(tree: lxml.html.HtmlElement | None, limit: int) -> str:
-    if tree is None:
-        return ""
-    title = tree.findtext(".//title") or ""
-    body = tree.find(".//body")
-    body_text = " ".join(body.itertext())[:limit] if body is not None else ""
-    return f"{title} {body_text}".lower()
-
-
-def _looks_like_challenge(html: str) -> bool:
-    if not html:
-        return False
-    content = _page_text(_parse(html), 500) or html[:1000].lower()
-    return any(marker in content for marker in _CHALLENGE_MARKERS)
-
-
-def _is_404_html(tree: lxml.html.HtmlElement | None) -> bool:
-    content = _page_text(tree, 300)
-    if "404" not in content:
-        return False
-    return "whoops" in content or "could not be found" in content or "not be found" in content
-
-
 async def _save_diagnostic_html(html: str, label: str) -> None:
     try:
-        DIAGNOSTICS_DIR.mkdir(parents=True, exist_ok=True)
-        path = DIAGNOSTICS_DIR / f"{label}-{int(time.time())}.html"
+        diagnostics_dir = paths.diagnostics_dir()
+        diagnostics_dir.mkdir(parents=True, exist_ok=True)
+        path = diagnostics_dir / f"{label}-{int(time.time())}.html"
         path.write_text(html or "", encoding="utf-8", errors="replace")
         log.info(f"Diagnostic HTML saved: {path}")
     except Exception as e:
@@ -163,7 +98,7 @@ async def _fetch(url: str, label: str, deadline: float | None = None, challenge_
             before_sleep=lambda rs: log.notice(
                 f"Cloudflare challenge detected ({label}), cooling down "
                 f"{(rs.next_action.sleep if rs.next_action else 0):.0f}s before retrying "
-                f"(challenge #{_challenge_hits} this run)..."
+                f"(challenge #{challenge_hits()} this run)..."
             ),
             reraise=True,
         ):
@@ -185,110 +120,6 @@ async def _fetch(url: str, label: str, deadline: float | None = None, challenge_
     return cleared
 
 
-def _classes(el) -> list[str]:
-    return list(getattr(el, "classes", None) or [])
-
-
-def _cell_text(cell) -> str:
-    return (cell.text_content() or "").strip() if cell is not None else ""
-
-
-def _closest(el, tags: set[str]):
-    node = el
-    while node is not None:
-        if node.tag in tags:
-            return node
-        node = node.getparent()
-    return None
-
-
-def _variant_rows(tree: lxml.html.HtmlElement | None) -> list:
-    if tree is None:
-        return []
-    rows = []
-    for el in tree.iter():
-        if "table-row" not in _classes(el):
-            continue
-        ancestor = el.getparent()
-        while ancestor is not None:
-            if "variants-table" in _classes(ancestor):
-                rows.append(el)
-                break
-            ancestor = ancestor.getparent()
-    return rows
-
-
-def _row_count(tree: lxml.html.HtmlElement | None) -> int:
-    return len(_variant_rows(tree))
-
-
-def _has_download_button(tree: lxml.html.HtmlElement | None) -> bool:
-    if tree is None:
-        return False
-    return any("downloadButton" in _classes(a) for a in tree.iter("a"))
-
-
-def _extract_variant_url(tree: lxml.html.HtmlElement | None, force_build: str | None, app_slug: str) -> str | None:
-    candidates: list[str | None] = [None] * 6
-
-    for row in _variant_rows(tree):
-        cells = [c for c in row.iterchildren() if "table-cell" in _classes(c)]
-        if len(cells) < 4:
-            continue
-
-        link = next((a for a in cells[0].iter("a") if "accent_color" in _classes(a)), None)
-        if link is None:
-            continue
-
-        if force_build and force_build not in _cell_text(cells[0]):
-            continue
-
-        badge = next((b for b in cells[0].iter() if "apkm-badge" in _classes(b)), None)
-        badge_text = _cell_text(badge).upper()
-        is_bundle = "BUNDLE" in badge_text or "PAKET" in badge_text
-
-        if app_slug == "instagram" and not is_bundle:
-            continue
-
-        arch_text = _cell_text(cells[1]).lower()
-        dpi_text = _cell_text(cells[3]).lower()
-
-        is_target_arch = arch_text == "" or any(a in arch_text for a in _ALLOWED_ARCHS)
-        if not is_target_arch:
-            continue
-
-        is_nodpi = dpi_text == "" or "nodpi" in dpi_text
-        is_anydpi = "anydpi" in dpi_text
-
-        if is_nodpi:
-            slot = 3 if is_bundle else 0
-        elif is_anydpi:
-            slot = 4 if is_bundle else 1
-        else:
-            slot = 5 if is_bundle else 2
-
-        if candidates[slot] is None:
-            candidates[slot] = link.get("href")
-
-    return next((c for c in candidates if c), None)
-
-
-def _dump_variant_rows_for_debug(tree: lxml.html.HtmlElement | None) -> None:
-    all_rows = [el for el in (tree.iter() if tree is not None else []) if "table-row" in _classes(el)]
-    scoped_rows = _variant_rows(tree)
-
-    log.info(
-        f"Debug: page has {len(all_rows)} .table-row elements "
-        f"({len(scoped_rows)} of them inside the real .variants-table), is404: {_is_404_html(tree)}"
-    )
-    for i, row in enumerate(scoped_rows[:20]):
-        cells = [c for c in row.iterchildren() if "table-cell" in _classes(c)]
-        name = _cell_text(cells[0])[:60] if len(cells) > 0 else None
-        arch = _cell_text(cells[1]) if len(cells) > 1 else None
-        dpi = _cell_text(cells[3]) if len(cells) > 3 else None
-        log.info(f"   [{i}] cells={len(cells)} name={name!r} arch={arch!r} dpi={dpi!r}")
-
-
 async def _page_exists(url: str, deadline: float | None = None) -> bool:
     try:
         cleared = await _fetch(url, label="direct-try", deadline=deadline)
@@ -296,14 +127,6 @@ async def _page_exists(url: str, deadline: float | None = None) -> bool:
         return not _is_404_html(tree) and _row_count(tree) > 0
     except Exception:
         return False
-
-
-def _find_listing_link(tree: lxml.html.HtmlElement, base_url: str, slug_part: str) -> str | None:
-    for a in tree.iter("a"):
-        href = a.get("href")
-        if href and "-release/" in href and slug_part in href and "#" not in href:
-            return _abs_url(base_url, href)
-    return None
 
 
 async def _resolve_list_url(site: ApkMirrorSite, version: str) -> tuple[str, bool]:
@@ -387,7 +210,7 @@ async def _resolve_download_url(variant_url: str, variant_cleared: Cleared) -> t
 
 
 async def download_apk(version: str, app_slug: str, site: ApkMirrorSite, force_build: str | None = None) -> str:
-    out_dir = Path(__file__).resolve().parent.parent.parent / "downloads"
+    out_dir = paths.downloads_dir()
     out_dir.mkdir(parents=True, exist_ok=True)
 
     list_url, is_final = await _resolve_list_url(site, version)
@@ -428,7 +251,7 @@ async def download_apk(version: str, app_slug: str, site: ApkMirrorSite, force_b
             before_sleep=lambda rs: log.notice(
                 f"Download attempt had no effect, cooling down "
                 f"{(rs.next_action.sleep if rs.next_action else 0):.0f}s before retrying "
-                f"(attempt #{_challenge_hits} this run)..."
+                f"(attempt #{challenge_hits()} this run)..."
             ),
             reraise=True,
         ):
@@ -463,32 +286,6 @@ async def download_apk(version: str, app_slug: str, site: ApkMirrorSite, force_b
 
     log.success(f"DONE: {final_path} ({final_path.stat().st_size / 1024 / 1024:.2f} MB)")
     return str(final_path)
-
-
-def _version_from_href(href: str | None) -> str | None:
-    if not href:
-        return None
-    match = re.search(r"-(\d[\d]*(?:-\d+)+)-release", href)
-    if not match:
-        return None
-    return match.group(1).replace("-", ".")
-
-
-def _listing_candidates(tree: lxml.html.HtmlElement, base_url: str) -> list[tuple[str, str]]:
-    results = []
-    for a in tree.iter("a"):
-        href = a.get("href")
-        if not href or "-release/" not in href:
-            continue
-        row = _closest(a, {"div", "li", "tr"})
-        if row is None:
-            row = a.getparent() if a.getparent() is not None else a
-        abs_href = _abs_url(base_url, href)
-        if abs_href:
-            results.append((abs_href, row.text_content() or ""))
-        if len(results) >= 15:
-            break
-    return results
 
 
 async def get_latest_listing(app_slug: str, site: ApkMirrorSite) -> dict | None:

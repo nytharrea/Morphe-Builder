@@ -5,13 +5,9 @@ only place a build list is ever written down, so there's nothing left for
 it to drift out of sync with. Run as `python scripts/prepare_release.py`
 from the repo root."""
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
 import json
 import os
+import sys
 from datetime import UTC, datetime
 
 from morphe_builder import catalog, log

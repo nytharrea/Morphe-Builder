@@ -3,7 +3,7 @@ from typing import NotRequired, TypedDict
 
 from curl_cffi.requests import AsyncSession
 
-from .. import log
+from .. import log, paths
 from ..http import github_headers, new_session
 
 
@@ -20,7 +20,8 @@ class GithubAppSite(TypedDict):
     tag_template: NotRequired[str]
 
 
-_GH_HEADERS = github_headers({"User-Agent": "Mozilla/5.0 (Python)"})
+def _headers() -> dict[str, str]:
+    return github_headers({"User-Agent": "Mozilla/5.0 (Python)"})
 
 
 def _build_tag(tag_template: str, version: str) -> str:
@@ -48,7 +49,7 @@ async def _download_asset(client: AsyncSession, asset: dict) -> str:
     size_mb = asset["size"] / (1024 * 1024)
     log.download(f"Found file to download: {asset['name']} ({size_mb:.2f} MB)")
 
-    out_dir = Path(__file__).resolve().parent.parent.parent / "downloads"
+    out_dir = paths.downloads_dir()
     out_dir.mkdir(parents=True, exist_ok=True)
     file_path = out_dir / asset["name"]
 
@@ -70,6 +71,10 @@ async def _download_asset(client: AsyncSession, asset: dict) -> str:
 
 
 async def download_apk(version: str, app_slug: str, source: GithubAppSite, force_build: str | None = None) -> str:
+    # force_build: unused here. Kept so scripts/patch.py can call apkmirror.download_apk
+    # and this function with the same signature; only APKMirror variant rows have a
+    # "build" concept to filter on (apkmirror_parse.extract_variant_url) - a GitHub
+    # release has no equivalent, so this parameter is accepted and ignored by design.
     owner = source["owner"]
     repo = source["repo"]
     name_hint = source.get("asset_hint")
@@ -84,7 +89,7 @@ async def download_apk(version: str, app_slug: str, source: GithubAppSite, force
             log.step(f"Fetching info from GitHub: {app_slug.upper()} ({owner}/{repo}, tag: {wanted_tag})")
 
             api_url = f"https://api.github.com/repos/{owner}/{repo}/releases/tags/{wanted_tag}"
-            res = await client.get(api_url, headers=_GH_HEADERS)
+            res = await client.get(api_url, headers=_headers())
             if res.status_code < 400:
                 release_data = res.json()
             else:
@@ -93,7 +98,7 @@ async def download_apk(version: str, app_slug: str, source: GithubAppSite, force
         if release_data is None:
             log.step(f"Fetching info from GitHub: {app_slug.upper()} ({owner}/{repo}, latest release)")
             api_url = f"https://api.github.com/repos/{owner}/{repo}/releases/latest"
-            res = await client.get(api_url, headers=_GH_HEADERS)
+            res = await client.get(api_url, headers=_headers())
             if res.status_code >= 400:
                 raise RuntimeError(f"GitHub API error: {res.status_code}")
             release_data = res.json()

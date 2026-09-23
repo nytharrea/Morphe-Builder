@@ -118,7 +118,17 @@ def _load_builds() -> dict[str, BuildConfig]:
         try:
             apk_source: ApkSource = app["apk_source"]
 
-            for build in app.get("builds") or []:
+            src_type = apk_source.get("type")
+            if src_type not in ("apkmirror", "github"):
+                raise CatalogError(
+                    f'App "{app_slug}" in {settings.apps_catalog_path} has apk_source.type '
+                    f'{src_type!r} - must be "apkmirror" or "github".'
+                )
+
+            if not app.get("builds"):
+                raise CatalogError(f'App "{app_slug}" in {settings.apps_catalog_path} has no builds.')
+
+            for build in app["builds"]:
                 key = build["key"]
                 if key in builds:
                     raise CatalogError(

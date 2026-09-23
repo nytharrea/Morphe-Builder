@@ -3,15 +3,11 @@
 then publishes (or updates) the one GitHub Release. Run as
 `python scripts/finalize_release.py` from the repo root."""
 
-import sys
+import asyncio
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-import asyncio
-
 from morphe_builder import catalog, log, notify
-from morphe_builder.fetchers.release_assets import download_latest_github_asset
+from morphe_builder.fetchers.release_assets import download_latest_release_asset
 from morphe_builder.release import (
     create_new_release,
     delete_other_releases,
@@ -123,7 +119,7 @@ async def main():
         source = catalog.PATCH_SOURCES[key]
         label = source["label"]
         try:
-            asset = await download_latest_github_asset(
+            asset = await download_latest_release_asset(
                 owner=source["owner"],
                 repo=source["repo"],
                 prerelease=True,

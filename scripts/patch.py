@@ -1,24 +1,19 @@
 """Entry point for the `patch` job (one matrix runner = one build key, via
-TARGET_APP). Run as `python scripts/patch.py` from the repo root - the
-sys.path bootstrap below is what lets it import the morphe_builder/
-package as a sibling directory without the package being pip-installed."""
-
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+TARGET_APP). Run as `python scripts/patch.py` from the repo root, with the
+package installed (`pip install -e .`)."""
 
 import asyncio
 import random
 import shutil
 import subprocess
+from pathlib import Path
 
 from morphe_builder import catalog, log
 from morphe_builder.apk.patcher import patch_apk
 from morphe_builder.apk.verify import verify_apk_signature
 from morphe_builder.apk.versions import extract_cli_versions, pick_latest_version
 from morphe_builder.fetchers import apkmirror, github_app
-from morphe_builder.fetchers.release_assets import download_latest_github_asset
+from morphe_builder.fetchers.release_assets import download_latest_release_asset
 from morphe_builder.settings import settings
 
 DIST_DIR = Path.cwd() / "dist"
@@ -120,7 +115,7 @@ async def process_build(build_key: str, desktop: str, patches: list[str]) -> dic
 
 async def main():
     try:
-        desktop_obj = await download_latest_github_asset(
+        desktop_obj = await download_latest_release_asset(
             owner="MorpheApp",
             repo="morphe-desktop",
             prerelease=True,
@@ -136,7 +131,7 @@ async def main():
         for key, source in catalog.PATCH_SOURCES.items():
             needed = any(key in catalog.patch_sources_for(k) for k in builds_to_process)
             if needed:
-                asset = await download_latest_github_asset(
+                asset = await download_latest_release_asset(
                     owner=source["owner"],
                     repo=source["repo"],
                     prerelease=True,

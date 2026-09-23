@@ -34,6 +34,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-lock.txt
 
+      - name: Install morphe_builder package (editable, no dependency resolution)
+        run: pip install -e . --no-deps
+
       - name: Validate catalog and compute release plan
         id: plan
         run: python scripts/prepare_release.py
@@ -103,6 +106,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-lock.txt
+
+      - name: Install morphe_builder package (editable, no dependency resolution)
+        run: pip install -e . --no-deps
 
       - name: Setup Keystore
         run: |
@@ -179,6 +185,9 @@ jobs:
 
       - name: Install dependencies (from lockfile, pinned versions)
         run: pip install -r requirements-lock.txt
+
+      - name: Install morphe_builder package (editable, no dependency resolution)
+        run: pip install -e . --no-deps
 
       - name: Download patched APK artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c

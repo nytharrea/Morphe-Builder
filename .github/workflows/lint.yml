@@ -30,6 +30,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install --upgrade -r requirements-dev.txt
 
+      - name: Install morphe_builder package (editable, no dependency resolution)
+        run: pip install -e . --no-deps
+
       - name: Verify requirements-lock.txt installs cleanly
         run: |
           python -m venv /tmp/lockcheck
@@ -42,7 +45,7 @@ jobs:
         run: ruff format --check .
 
       - name: mypy
-        run: mypy morphe_builder scripts
+        run: mypy src/morphe_builder scripts
 
       - name: pytest
         run: pytest -v

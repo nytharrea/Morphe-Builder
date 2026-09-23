@@ -87,7 +87,7 @@ async def _download_file(url: str, output_path: Path, expected_size: int | None 
     return str(output_path)
 
 
-async def download_latest_github_asset(
+async def download_latest_release_asset(
     owner: str, repo: str, match: Callable[[str], bool], prerelease: bool = False
 ) -> dict:
     log.step(f"Fetching release: {owner}/{repo}")
@@ -139,3 +139,6 @@ async def download_latest_github_asset(
         "tag": release.get("tag_name") or "",
         "prerelease": bool(release.get("prerelease")),
     }
+
+
+download_latest_github_asset = download_latest_release_asset

@@ -16,13 +16,10 @@ committed nothing, even on a run where verify.py had just pinned a new
 signature for that app.
 """
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
 import json
 import subprocess
+import sys
+from pathlib import Path
 
 from tenacity import Retrying, retry_if_exception_type, stop_after_attempt
 

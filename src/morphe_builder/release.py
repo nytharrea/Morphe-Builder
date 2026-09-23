@@ -3,7 +3,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from . import log
-from .fetchers.release_assets import download_latest_github_asset
+from .fetchers.release_assets import download_latest_release_asset
 from .http import github_headers, new_session
 from .settings import settings
 
@@ -173,7 +173,7 @@ async def upload_patched_apks(release: dict, apk_paths: list[str]) -> None:
 async def _fetch_and_upload_companion(
     release: dict, owner: str, repo: str, match: Callable[[str], bool], base_name: str
 ) -> None:
-    result = await download_latest_github_asset(owner=owner, repo=repo, match=match, prerelease=True)
+    result = await download_latest_release_asset(owner=owner, repo=repo, match=match, prerelease=True)
 
     final_name = base_name.replace(".apk", "-PRERELEASE.apk") if result.get("prerelease") else base_name
 

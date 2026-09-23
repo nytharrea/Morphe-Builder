@@ -153,6 +153,12 @@ def test_github_apk_source_is_preserved_as_is(monkeypatch, tmp_path):
     assert builds["example"]["apk_source"] == {"type": "github", "owner": "SomeOrg", "repo": "some-repo"}
 
 
+def test_unknown_apk_source_type_raises_a_clear_error(monkeypatch, tmp_path):
+    app = _minimal_app(apk_source={"type": "apkmirrorr", "org": "example-org", "slug": "example"})
+    with pytest.raises(catalog.CatalogError, match="apkmirror"):
+        _load(monkeypatch, tmp_path, {"myapp": app})
+
+
 def test_duplicate_build_key_across_different_apps_raises(monkeypatch, tmp_path):
     apps = {
         "app-one": _minimal_app(builds=[{"key": "shared-key", "patch_sources": ["morphe"]}]),
@@ -165,6 +171,19 @@ def test_duplicate_build_key_across_different_apps_raises(monkeypatch, tmp_path)
 def test_build_with_no_patch_sources_raises_at_load_time(monkeypatch, tmp_path):
     app = _minimal_app(builds=[{"key": "example", "patch_sources": []}])
     with pytest.raises(catalog.CatalogError, match="no patch_sources"):
+        _load(monkeypatch, tmp_path, {"myapp": app})
+
+
+def test_app_with_empty_builds_list_raises_at_load_time(monkeypatch, tmp_path):
+    app = _minimal_app(builds=[])
+    with pytest.raises(catalog.CatalogError, match="no builds"):
+        _load(monkeypatch, tmp_path, {"myapp": app})
+
+
+def test_app_with_missing_builds_key_raises_at_load_time(monkeypatch, tmp_path):
+    app = _minimal_app()
+    del app["builds"]
+    with pytest.raises(catalog.CatalogError, match="no builds"):
         _load(monkeypatch, tmp_path, {"myapp": app})
 
 

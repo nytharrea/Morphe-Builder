@@ -66,7 +66,8 @@ def patch_apk(
         text=True,
         bufsize=1,
     )
-    assert process.stdout is not None
+    if process.stdout is None:
+        raise RuntimeError("subprocess.Popen returned no stdout pipe even though stdout=PIPE was requested.")
 
     output_lines = []
     for line in process.stdout:
