@@ -26,7 +26,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
-          python-version: "3.x"
+          python-version: "3.12"
           check-latest: true
 
       - name: Install Python dependencies (from lockfile, pinned versions)
@@ -40,6 +40,19 @@ jobs:
       - name: Validate catalog and compute release plan
         id: plan
         run: python scripts/prepare_release.py
+
+      - name: Download shared patch assets (jar + every patch source's .mpp, once for the whole matrix)
+        run: python scripts/download_shared_assets.py
+
+      - name: Upload shared assets artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: shared-patch-assets
+          path: |
+            *.jar
+            *.mpp
+          if-no-files-found: error
+          retention-days: 1
 
   patch:
     needs: prepare
@@ -92,7 +105,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
-          python-version: "3.x"
+          python-version: "3.12"
           check-latest: true
 
       - name: Setup Java
@@ -109,6 +122,13 @@ jobs:
 
       - name: Install morphe_builder package (editable, no dependency resolution)
         run: pip install -e . --no-deps
+
+      - name: Download shared patch assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: shared-patch-assets
+          path: .
+        continue-on-error: true # best-effort: a missing/expired artifact just means this job falls back to downloading its own copy, like before
 
       - name: Setup Keystore
         run: |
@@ -135,7 +155,9 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: apk-${{ matrix.app }}
-          path: dist/*.apk
+          path: |
+            dist/*.apk
+            dist/status-*.json
           if-no-files-found: ignore
           retention-days: 1
 
@@ -180,7 +202,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
-          python-version: "3.x"
+          python-version: "3.12"
           check-latest: true
 
       - name: Install dependencies (from lockfile, pinned versions)

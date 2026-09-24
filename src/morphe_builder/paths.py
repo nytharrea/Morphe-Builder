@@ -1,27 +1,33 @@
 """Shared filesystem-location helpers.
 
-The pipeline always runs from the repo root (every script's own "Run as
-`python scripts/x.py` from the repo root" contract, plus CI's checkout
-step, keep that invariant), so resolving a path from repo_root() at the
-point you actually need it is equivalent to hardcoding the repo's
-absolute path - except it keeps working if that root ever moves.
+repo_root() is anchored to this file's own on-disk location
+(paths.py lives at <repo root>/src/morphe_builder/paths.py, so its
+great-grandparent directory is the repo root) rather than to the
+process's current working directory. That keeps every path built from
+it correct even if something ever runs from a different cwd or calls
+os.chdir() - instead of depending on the "always run from repo root"
+convention every script's own "Run as `python scripts/x.py` from the
+repo root" docstring otherwise has to declare and CI's checkout step
+has to uphold.
 
-The one thing to avoid is caching a path built from repo_root() as a
-module-level constant: that freezes in whatever the cwd happened to be
-at import time instead of at the point of use, so if anything ever did
-os.chdir() between import and use, a cached constant would silently
-point at the wrong place while a fresh call here wouldn't. Nothing in
-this codebase calls chdir today - this module exists to consolidate
+settings.py's own *_path fields resolve through repo_root() for the
+same reason, even though each is only computed once, at Settings()
+construction time (a pydantic default_factory, evaluated when the
+module-level `settings` singleton is built): since repo_root() no
+longer reads any mutable process state, caching its result the one
+time it's called is no longer a hazard the way caching a
+Path.cwd()-derived value would be. This module exists to consolidate
 what used to be two independent copies of repo_root() (apkmirror.py,
 github_app.py) plus a module-level DIAGNOSTICS_DIR built from one of
-them, into one place, resolved fresh on every call.
+them, into this one place.
 """
 
 from pathlib import Path
 
 
 def repo_root() -> Path:
-    return Path.cwd()
+    # paths.py -> morphe_builder -> src -> repo root
+    return Path(__file__).resolve().parents[2]
 
 
 def diagnostics_dir() -> Path:

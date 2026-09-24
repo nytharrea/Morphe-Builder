@@ -1,5 +1,6 @@
 import re
 import subprocess
+import threading
 from pathlib import Path
 
 from .. import log
@@ -69,12 +70,40 @@ def patch_apk(
     if process.stdout is None:
         raise RuntimeError("subprocess.Popen returned no stdout pipe even though stdout=PIPE was requested.")
 
-    output_lines = []
-    for line in process.stdout:
-        log.patch_line(line)
-        output_lines.append(line)
+    # A plain process.wait(timeout=...) wouldn't catch a hang here: the
+    # blocking call is the line-by-line `for line in process.stdout`
+    # iteration below, which would already be stuck before we ever reached
+    # a wait(). This watchdog timer kills the process - which closes its
+    # stdout, so the for-loop below sees EOF and returns - if it goes
+    # completely silent for patch_timeout seconds; it resets on every line
+    # received, so a slow but still-progressing patch run is never killed
+    # for simply taking a while, only for going fully unresponsive.
+    timed_out = threading.Event()
 
-    process.wait()
+    def _kill_on_timeout() -> None:
+        timed_out.set()
+        process.kill()
+
+    watchdog = threading.Timer(settings.patch_timeout, _kill_on_timeout)
+    watchdog.start()
+    try:
+        output_lines = []
+        for line in process.stdout:
+            watchdog.cancel()
+            log.patch_line(line)
+            output_lines.append(line)
+            watchdog = threading.Timer(settings.patch_timeout, _kill_on_timeout)
+            watchdog.start()
+
+        process.wait()
+    finally:
+        watchdog.cancel()
+
+    if timed_out.is_set():
+        raise RuntimeError(
+            f"Patch CLI timed out (no output for {settings.patch_timeout:.0f}s) and was killed - likely hung."
+        )
+
     output = "".join(output_lines)
 
     if "Applying 0 patches" in output:

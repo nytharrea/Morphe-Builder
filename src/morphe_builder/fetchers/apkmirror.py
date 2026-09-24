@@ -8,6 +8,7 @@ Public API: close_session, download_apk, get_latest_listing, ApkMirrorSite.
 Everything else here is orchestration private to this module.
 """
 
+import asyncio
 import re
 import time
 from pathlib import Path
@@ -108,6 +109,15 @@ async def _fetch(url: str, label: str, deadline: float | None = None, challenge_
                     cleared = await flaresolverr.get(url)
                 except FlareSolverrError as e:
                     raise RuntimeError(f"FlareSolverr could not fetch {url}: {e}") from e
+                if cleared.status == 404:
+                    # A real 404 means this specific URL doesn't exist, not that
+                    # APKMirror is challenge-walling us - hand it back immediately
+                    # instead of spending challenge_retries attempts and an
+                    # escalating cooldown on a page that will never appear.
+                    # Callers that care (e.g. _page_exists) already inspect the
+                    # returned page's own content/status to decide what a 404
+                    # means for them.
+                    return cleared
                 if cleared.status >= 400 or _looks_like_challenge(cleared.html):
                     raise _ChallengePresent(_register_challenge())
     except _ChallengePresent:
@@ -197,7 +207,8 @@ async def _resolve_download_url(variant_url: str, variant_cleared: Cleared) -> t
         raise _ChallengePresent(_register_challenge())
 
     confirm_url = _abs_url(variant_url, button.get("href"))
-    assert confirm_url is not None
+    if confirm_url is None:
+        raise RuntimeError(f"Could not resolve download button URL on {variant_url}")
     confirm_cleared = await _fetch(confirm_url, label="confirm-page")
     confirm_tree = _parse(confirm_cleared.html)
 
@@ -231,13 +242,16 @@ async def download_apk(version: str, app_slug: str, site: ApkMirrorSite, force_b
                 break
             log.notice(f"No matching row found on page, retrying ({attempt + 1}/4)...")
             _dump_variant_rows_for_debug(tree)
+            if attempt < 3:
+                await asyncio.sleep(2.0 * (attempt + 1))
 
         if not variant_url:
             await _save_diagnostic_html(cleared.html, f"no-variant-{app_slug}")
             raise RuntimeError("No matching variant found on APKMirror")
         log.info(f"VARIANT: {variant_url}")
 
-    assert variant_url is not None
+    if variant_url is None:
+        raise RuntimeError(f"Could not resolve a variant URL for {app_slug}")
 
     final_path: Path | None = None
     last_error: Exception | None = None
@@ -301,6 +315,8 @@ async def get_latest_listing(app_slug: str, site: ApkMirrorSite) -> dict | None:
         if candidates:
             break
         log.notice(f"No link found on listing page, retrying ({attempt + 1}/4)...")
+        if attempt < 3:
+            await asyncio.sleep(2.0 * (attempt + 1))
 
     if not candidates:
         if cleared is not None:

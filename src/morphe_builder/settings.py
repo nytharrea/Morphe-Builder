@@ -21,6 +21,8 @@ from pathlib import Path
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from . import paths
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -43,17 +45,20 @@ class Settings(BaseSettings):
     flaresolverr_url: str = "http://localhost:8191/v1"
     flaresolverr_timeout: float = 60.0
     download_timeout: float = 120.0
+    patch_timeout: float = 300.0  # seconds of complete silence from the patch CLI before patcher.py kills it
 
     skip_signature_verify: bool = False
     known_signatures_path: Path = Field(
-        default_factory=lambda: Path.cwd() / "signatures" / "known_signatures.json"
+        default_factory=lambda: paths.repo_root() / "signatures" / "known_signatures.json"
     )
     pending_signatures_path: Path = Field(
-        default_factory=lambda: Path.cwd() / "signatures" / "pending_signatures.json"
+        default_factory=lambda: paths.repo_root() / "signatures" / "pending_signatures.json"
     )
 
-    apps_catalog_path: Path = Field(default_factory=lambda: Path.cwd() / "catalog" / "apps.yaml")
-    patch_sources_catalog_path: Path = Field(default_factory=lambda: Path.cwd() / "catalog" / "patch_sources.yaml")
+    apps_catalog_path: Path = Field(default_factory=lambda: paths.repo_root() / "catalog" / "apps.yaml")
+    patch_sources_catalog_path: Path = Field(
+        default_factory=lambda: paths.repo_root() / "catalog" / "patch_sources.yaml"
+    )
 
     discord_webhook_url: SecretStr = SecretStr("")
     telegram_bot_token: SecretStr = SecretStr("")

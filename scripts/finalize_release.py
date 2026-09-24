@@ -4,6 +4,7 @@ then publishes (or updates) the one GitHub Release. Run as
 `python scripts/finalize_release.py` from the repo root."""
 
 import asyncio
+import json
 from pathlib import Path
 
 from morphe_builder import catalog, log, notify
@@ -81,6 +82,25 @@ def find_patched_apks(artifacts_dir: Path):
     return matched, unmatched
 
 
+def find_failure_reasons(artifacts_dir: Path) -> dict[str, str]:
+    """Reads back the dist/status-<build_key>.json files scripts/patch.py
+    writes for a build it couldn't finish - uploaded in the exact same
+    apk-${matrix.app} artifact as a successful build's .apk would be, so
+    they show up right here alongside it with no separate download step.
+    A build with no status file (the matrix job itself crashed before
+    ever reaching patch.py's own try/except, say) just has no reason."""
+    reasons: dict[str, str] = {}
+    for status_path in sorted(artifacts_dir.rglob("status-*.json")):
+        try:
+            data = json.loads(status_path.read_text())
+            build_key = data.get("build_key")
+            if build_key:
+                reasons[build_key] = str(data.get("error") or "unknown error")
+        except (json.JSONDecodeError, OSError) as e:
+            log.warn(f"Could not read failure status {status_path}: {e}")
+    return reasons
+
+
 async def main():
     if not settings.release_tag or not settings.release_name:
         raise RuntimeError("Missing RELEASE_TAG/RELEASE_NAME (expected to be set by prepare_release.py's output)")
@@ -98,10 +118,11 @@ async def main():
 
     succeeded_keys = {apk["build_key"] for apk in matched}
     failed_keys = [key for key in catalog.BUILDS if key not in succeeded_keys]
+    failure_reasons = find_failure_reasons(artifacts_dir)
 
     if not matched:
         log.error("No apps patched successfully in this run, skipping release creation.")
-        await notify.notify(notify.format_all_failed(release_name, failed_keys))
+        await notify.notify(notify.format_all_failed(release_name, failed_keys, failure_reasons))
         return
 
     body = "### Latest Patched APKs\n\n"
@@ -157,7 +178,7 @@ async def main():
     release_url = release.get("html_url") or (
         f"https://github.com/{settings.github_repository}/releases/tag/{release_tag}"
     )
-    await notify.notify(notify.format_summary(release_name, release_url, matched, failed_keys))
+    await notify.notify(notify.format_summary(release_name, release_url, matched, failed_keys, failure_reasons))
 
 
 if __name__ == "__main__":

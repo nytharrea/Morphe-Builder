@@ -3,6 +3,7 @@ TARGET_APP). Run as `python scripts/patch.py` from the repo root, with the
 package installed (`pip install -e .`)."""
 
 import asyncio
+import json
 import random
 import shutil
 import subprocess
@@ -19,11 +20,26 @@ from morphe_builder.settings import settings
 DIST_DIR = Path.cwd() / "dist"
 
 
+def _write_failure_status(build_key: str, reason: str) -> None:
+    """Writes dist/status-<build_key>.json so the "Upload patched APK
+    artifact" step (which already uploads whatever's in dist/ for this
+    matrix job) carries a failure reason alongside - or instead of - an
+    APK, for finalize_release.py to read back and surface in the release
+    notify message. Best-effort: a failure to write this must never mask
+    the real error that's already being logged and propagated above it.
+    """
+    try:
+        DIST_DIR.mkdir(parents=True, exist_ok=True)
+        status_path = DIST_DIR / f"status-{build_key}.json"
+        status_path.write_text(json.dumps({"build_key": build_key, "error": reason}, indent=2) + "\n")
+    except OSError as e:
+        log.warn(f"Could not write failure status for {build_key}: {e}")
+
+
 async def process_build(build_key: str, desktop: str, patches: list[str]) -> dict | None:
     build = catalog.BUILDS[build_key]
     app_slug = build["app_slug"]
     source = build["apk_source"]
-    is_apkmirror_app = source["type"] == "apkmirror"
 
     log.header(f"PROCESSING: {app_slug.upper()}")
 
@@ -48,6 +64,7 @@ async def process_build(build_key: str, desktop: str, patches: list[str]) -> dic
                 ],
                 capture_output=True,
                 text=True,
+                timeout=settings.download_timeout,
             )
             if result.returncode != 0:
                 stderr_tail = (result.stderr or "").strip().splitlines()[-5:]
@@ -63,20 +80,24 @@ async def process_build(build_key: str, desktop: str, patches: list[str]) -> dic
             log.warn(f"Could not fetch version list: {e}")
 
     if not selected_version:
-        if not is_apkmirror_app:
-            selected_version = "latest"
-        else:
+        if source["type"] == "apkmirror":
             latest = await apkmirror.get_latest_listing(app_slug, source)
             if latest and latest.get("version"):
                 selected_version = latest["version"]
+        elif source["type"] == "github":
+            selected_version = "latest"
+        else:
+            raise RuntimeError(f"Unknown apk_source.type {source['type']!r} for build {build_key!r}")
 
     if not selected_version:
         raise RuntimeError("Could not determine a suitable version number.")
 
-    if is_apkmirror_app:
+    if source["type"] == "apkmirror":
         apk_path = await apkmirror.download_apk(selected_version, app_slug, source, build.get("force_build"))
-    else:
+    elif source["type"] == "github":
         apk_path = await github_app.download_apk(selected_version, app_slug, source, build.get("force_build"))
+    else:
+        raise RuntimeError(f"Unknown apk_source.type {source['type']!r} for build {build_key!r}")
 
     verify_apk_signature(apk_path, app_slug)
 
@@ -156,9 +177,11 @@ async def main():
                     log.success(f"{build_key.upper()} done: {result['name']}")
                 else:
                     failed_builds.append(build_key)
+                    _write_failure_status(build_key, "patch_apk produced no output file")
             except Exception as err:
                 log.error(f"{build_key.upper()} failed, skipping: {err}")
                 failed_builds.append(build_key)
+                _write_failure_status(build_key, str(err))
 
             is_last = build_key == builds_to_process[-1]
             if catalog.BUILDS[build_key]["apk_source"]["type"] == "apkmirror" and not is_last:

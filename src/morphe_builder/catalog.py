@@ -102,9 +102,9 @@ def _load_patch_sources() -> dict[str, PatchSource]:
                 "repo": entry["repo"],
                 "label": entry.get("label", key),
             }
-        except KeyError as e:
+        except (KeyError, TypeError, AttributeError) as e:
             raise CatalogError(
-                f'Patch source "{key}" in {settings.patch_sources_catalog_path} is missing required field {e}.'
+                f'Patch source "{key}" in {settings.patch_sources_catalog_path} is malformed: {e}'
             ) from e
 
     return sources
@@ -153,10 +153,8 @@ def _load_builds() -> dict[str, BuildConfig]:
                     "force_version": build.get("force_version"),
                     "force_build": build.get("force_build"),
                 }
-        except KeyError as e:
-            raise CatalogError(
-                f'App "{app_slug}" in {settings.apps_catalog_path} is missing required field {e}.'
-            ) from e
+        except (KeyError, TypeError, AttributeError) as e:
+            raise CatalogError(f'App "{app_slug}" in {settings.apps_catalog_path} is malformed: {e}') from e
 
     return builds
 
@@ -172,8 +170,10 @@ def patch_sources_for(build_key: str) -> list[str]:
 def get_release_naming(build_key: str) -> tuple[str, str | None]:
     """Pick the display name for a build's release filename and, if some
     other build shares that same display name (today: only the five
-    tiktok-* builds), a disambiguating suffix - that build's primary
-    (first) patch source's GitHub owner."""
+    tiktok-* builds), a disambiguating suffix - normally that build's
+    primary (first) patch source's GitHub owner, but falling back to the
+    build key itself if two siblings would still collide (same
+    display_name *and* the same primary-source owner)."""
     build = BUILDS[build_key]
     display_name = build["display_name"]
 
@@ -181,5 +181,11 @@ def get_release_naming(build_key: str) -> tuple[str, str | None]:
     if len(siblings) <= 1:
         return display_name, None
 
-    primary_source = build["patch_sources"][0]
-    return display_name, PATCH_SOURCES[primary_source]["owner"]
+    def _owner(b: BuildConfig) -> str:
+        return PATCH_SOURCES[b["patch_sources"][0]]["owner"]
+
+    suffix = _owner(build)
+    if sum(1 for b in siblings if _owner(b) == suffix) > 1:
+        suffix = build["key"]
+
+    return display_name, suffix

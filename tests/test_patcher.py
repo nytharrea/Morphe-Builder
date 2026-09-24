@@ -1,5 +1,8 @@
+import threading
+import time
 from pathlib import Path
 
+import pytest
 from pydantic import SecretStr
 
 from morphe_builder.apk import patcher
@@ -208,3 +211,73 @@ def test_returns_the_patched_apk_path_on_success(monkeypatch, tmp_path):
     result = patcher.patch_apk("desktop.jar", ["p"], "input.apk")
     assert result == str(apk_path)
     assert Path(result).exists()
+
+
+class _HangingFakeProcess:
+    """Simulates a `java` process that prints one line, then goes
+    completely silent and never exits on its own - only kill() (called by
+    the watchdog, exactly as a real timeout would) unblocks it. Without
+    the timeout, patch_apk()'s `for line in process.stdout` would hang on
+    this forever."""
+
+    def __init__(self, first_line):
+        self._killed = threading.Event()
+        self.returncode = None
+        self.stdout = self._lines(first_line)
+
+    def _lines(self, first_line):
+        yield first_line
+        self._killed.wait()  # never set except by kill() below - simulates a hang
+
+    def kill(self):
+        self.returncode = -9
+        self._killed.set()
+
+    def wait(self, timeout=None):
+        pass
+
+
+def test_patch_apk_kills_a_hung_process_instead_of_hanging_forever(monkeypatch):
+    monkeypatch.setattr(patcher.settings, "patch_timeout", 0.2)
+    monkeypatch.setattr(patcher.settings, "ks_path", None)
+    monkeypatch.setattr(patcher.settings, "ks_password", None)
+    monkeypatch.setattr(patcher.settings, "ks_alias", None)
+    monkeypatch.setattr(patcher.settings, "key_password", None)
+    monkeypatch.setattr(patcher.log, "warn", lambda msg: None)
+    monkeypatch.setattr(patcher.log, "patch_line", lambda line: None)
+
+    fake_process = _HangingFakeProcess("INFO: starting up\n")
+    monkeypatch.setattr(patcher.subprocess, "Popen", lambda cmd, **kwargs: fake_process)
+
+    with pytest.raises(RuntimeError, match="timed out"):
+        patcher.patch_apk("desktop.jar", ["patch1"], "input.apk")
+
+    assert fake_process.returncode == -9  # kill() was actually called
+
+
+def test_patch_apk_does_not_kill_a_slow_but_still_producing_process(monkeypatch, tmp_path):
+    """A patch run that takes a while but keeps logging output must not be
+    mistaken for a hang - the watchdog is an idle timeout, not an overall
+    deadline, so it should reset on every line."""
+    monkeypatch.setattr(patcher.settings, "patch_timeout", 0.2)
+    monkeypatch.setattr(patcher.settings, "ks_path", None)
+    monkeypatch.setattr(patcher.log, "warn", lambda msg: None)
+
+    apk_path = tmp_path / "Youtube-patched.apk"
+    apk_path.write_bytes(b"fake patched apk")
+
+    def _lines():
+        for i in range(3):
+            time.sleep(0.1)  # less than patch_timeout between lines
+            yield f"INFO: step {i}\n"
+        yield f"INFO: Saved to {apk_path}\n"
+
+    fake_process = _HangingFakeProcess.__new__(_HangingFakeProcess)
+    fake_process.stdout = _lines()
+    fake_process.returncode = 0
+    fake_process.wait = lambda timeout=None: None
+    monkeypatch.setattr(patcher.log, "patch_line", lambda line: None)
+    monkeypatch.setattr(patcher.subprocess, "Popen", lambda cmd, **kwargs: fake_process)
+
+    result = patcher.patch_apk("desktop.jar", ["p"], "input.apk")
+    assert result == str(apk_path)

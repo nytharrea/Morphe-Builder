@@ -57,22 +57,37 @@ async def notify(text: str) -> None:
         log.warn(f"Notification error: {e}")
 
 
-def format_summary(release_name: str, release_url: str, matched: list[dict], failed_keys: list[str]) -> str:
+def _format_failed_line(key: str, failure_reasons: dict[str, str] | None) -> str:
+    reason = (failure_reasons or {}).get(key)
+    if not reason:
+        return f"  • {key}"
+    return f"  • {key} — {_truncate(reason, 100)}"
+
+
+def format_summary(
+    release_name: str,
+    release_url: str,
+    matched: list[dict],
+    failed_keys: list[str],
+    failure_reasons: dict[str, str] | None = None,
+) -> str:
     lines = [f"✅ {release_name}", "", f"{len(matched)} app(s) patched:"]
     lines += [f"  • {apk['display_name']} — {apk['version']}" for apk in matched]
 
     if failed_keys:
         lines += ["", f"⚠️ {len(failed_keys)} app(s) failed or produced no APK:"]
-        lines += [f"  • {key}" for key in failed_keys]
+        lines += [_format_failed_line(key, failure_reasons) for key in failed_keys]
 
     lines += ["", release_url]
     return "\n".join(lines)
 
 
-def format_all_failed(release_name: str, failed_keys: list[str]) -> str:
+def format_all_failed(
+    release_name: str, failed_keys: list[str], failure_reasons: dict[str, str] | None = None
+) -> str:
     lines = [f"❌ {release_name} — no apps were patched successfully this run."]
     if failed_keys:
         lines += ["", f"{len(failed_keys)} app(s) failed or produced no APK:"]
-        lines += [f"  • {key}" for key in failed_keys]
+        lines += [_format_failed_line(key, failure_reasons) for key in failed_keys]
     lines += ["", "Check the Actions run log for details."]
     return "\n".join(lines)

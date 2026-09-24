@@ -1,5 +1,7 @@
 import re
 
+from .. import log
+
 
 def extract_cli_versions(output: str) -> list[dict]:
     results = []
@@ -26,6 +28,12 @@ def extract_cli_versions(output: str) -> list[dict]:
 
     if not results:
         fallback = re.findall(r"\d+(?:\.\d+){1,4}(?:-[a-zA-Z]+\.\d+)?", output)
+        if fallback:
+            log.warn(
+                "Could not parse the 'Most common compatible versions' section - falling back to loosely "
+                f"matching any version-looking number in the raw CLI output ({len(fallback)} found). This can "
+                "pick up unrelated numbers (dates, sizes, banners), so double-check the version this selects."
+            )
         return [{"version": v, "patches": 0} for v in fallback]
 
     return results

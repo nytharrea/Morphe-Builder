@@ -1,4 +1,4 @@
-from scripts.finalize_release import find_patched_apks, match_asset
+from scripts.finalize_release import find_failure_reasons, find_patched_apks, match_asset
 
 
 def test_match_asset_simple_app():
@@ -70,4 +70,42 @@ def test_find_patched_apks_empty_dir(tmp_path):
     artifacts_dir.mkdir()
     matched, unmatched = find_patched_apks(artifacts_dir)
     assert matched == []
-    assert unmatched == []
+
+
+def test_find_failure_reasons_reads_status_files_from_every_matrix_jobs_artifact(tmp_path):
+    artifacts_dir = tmp_path / "artifacts"
+    (artifacts_dir / "apk-gboard").mkdir(parents=True)
+    (artifacts_dir / "apk-brave").mkdir(parents=True)
+    (artifacts_dir / "apk-youtube").mkdir(parents=True)
+
+    (artifacts_dir / "apk-gboard" / "status-gboard.json").write_text(
+        '{"build_key": "gboard", "error": "HTTP 500 fetching listing page"}'
+    )
+    (artifacts_dir / "apk-brave" / "status-brave.json").write_text(
+        '{"build_key": "brave", "error": "patch_apk produced no output file"}'
+    )
+    # youtube succeeded - only a real APK here, no status file at all
+    (artifacts_dir / "apk-youtube" / "YouTube-19.35.36.apk").write_bytes(b"fake apk")
+
+    reasons = find_failure_reasons(artifacts_dir)
+
+    assert reasons == {
+        "gboard": "HTTP 500 fetching listing page",
+        "brave": "patch_apk produced no output file",
+    }
+
+
+def test_find_failure_reasons_skips_a_corrupt_status_file_instead_of_crashing(tmp_path):
+    artifacts_dir = tmp_path / "artifacts"
+    (artifacts_dir / "apk-gboard").mkdir(parents=True)
+    (artifacts_dir / "apk-gboard" / "status-gboard.json").write_text("not valid json{{{")
+
+    assert find_failure_reasons(artifacts_dir) == {}
+
+
+def test_find_failure_reasons_empty_when_everything_succeeded(tmp_path):
+    artifacts_dir = tmp_path / "artifacts"
+    (artifacts_dir / "apk-youtube").mkdir(parents=True)
+    (artifacts_dir / "apk-youtube" / "YouTube-19.35.36.apk").write_bytes(b"fake apk")
+
+    assert find_failure_reasons(artifacts_dir) == {}

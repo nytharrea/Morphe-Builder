@@ -192,3 +192,41 @@ def test_format_all_failed_handles_empty_failed_list():
     text = notify.format_all_failed("Build #42", [])
     assert "no apps were patched successfully" in text
     assert "Check the Actions run log" in text
+
+
+def test_format_summary_shows_failure_reason_when_available():
+    text = notify.format_summary(
+        "Build #42",
+        "https://example.com",
+        [],
+        ["gboard", "brave"],
+        failure_reasons={"gboard": "HTTP 500 fetching listing page"},
+    )
+    assert "gboard — HTTP 500 fetching listing page" in text
+    # brave has no entry in failure_reasons - falls back to the plain,
+    # no-reason line rather than showing "None" or crashing.
+    assert "  • brave" in text
+    assert "brave — " not in text
+
+
+def test_format_all_failed_shows_failure_reason_when_available():
+    text = notify.format_all_failed(
+        "Build #42",
+        ["youtube"],
+        failure_reasons={"youtube": "patch_apk produced no output file"},
+    )
+    assert "youtube — patch_apk produced no output file" in text
+
+
+def test_format_summary_truncates_a_very_long_failure_reason():
+    text = notify.format_summary(
+        "Build #42",
+        "https://example.com",
+        [],
+        ["gboard"],
+        failure_reasons={"gboard": "x" * 500},
+    )
+    # the reason itself is capped well under the raw 500 chars, independent
+    # of notify()'s own whole-message _BODY_LIMIT truncation
+    assert "x" * 500 not in text
+    assert "(truncated)" in text
