@@ -302,6 +302,17 @@ async def download_apk(version: str, app_slug: str, site: ApkMirrorSite, force_b
     return str(final_path)
 
 
+def _version_sort_key(version: str) -> tuple[int, ...]:
+    """Dotted version string -> tuple of ints for numeric comparison (so
+    "10.0" sorts after "9.0", unlike plain string comparison) - mirrors
+    versions.pick_latest_version()'s own sort key."""
+    core = version.split("-")[0]
+    try:
+        return tuple(int(p) for p in core.split("."))
+    except ValueError:
+        return (0,)
+
+
 async def get_latest_listing(app_slug: str, site: ApkMirrorSite) -> dict | None:
     listing_url = f"https://www.apkmirror.com/apk/{site['org']}/{site['slug']}/"
     log.info(f"LISTING: {listing_url}")
@@ -323,14 +334,32 @@ async def get_latest_listing(app_slug: str, site: ApkMirrorSite) -> dict | None:
             await _save_diagnostic_html(cleared.html, f"no-listing-{app_slug}")
         return None
 
+    # listing_candidates() collects every "-release/" link anywhere on the
+    # page in raw DOM order - that is NOT reliably "newest first". A real
+    # run confirmed a page can (and did) surface an ancient release - e.g.
+    # an archived "version history" entry - ahead of the actual latest
+    # one, which a plain "take the first candidate" pick had no defense
+    # against. Score every same-app candidate by its own parsed version
+    # number and take the highest, instead of trusting page position.
+    same_app_path = f"/apk/{site['org']}/{site['slug']}/"
+    best: tuple[tuple[int, ...], str, str] | None = None
     for href, text in candidates:
+        if same_app_path not in href:
+            continue
         version = _version_from_href(href)
         if not version:
             match = re.search(r"\d+(?:\.\d+)+", text)
             version = match.group(0) if match else None
-        if version:
-            return {"version": version, "href": href}
+        if not version:
+            continue
+        core = _version_sort_key(version)
+        if best is None or core > best[0]:
+            best = (core, version, href)
 
-    if cleared is not None:
-        await _save_diagnostic_html(cleared.html, f"no-version-{app_slug}")
-    return None
+    if best is None:
+        if cleared is not None:
+            await _save_diagnostic_html(cleared.html, f"no-version-{app_slug}")
+        return None
+
+    _, version, href = best
+    return {"version": version, "href": href}

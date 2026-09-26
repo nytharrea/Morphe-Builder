@@ -48,19 +48,26 @@ def test_no_section_header_logs_nothing(monkeypatch):
     assert warnings == []
 
 
-def test_section_header_present_but_unparseable_logs_warn_and_returns_empty(monkeypatch):
+def test_section_header_present_but_unparseable_logs_warn_and_returns_empty(monkeypatch, tmp_path):
     """Unlike the above, the header IS present here - it's the per-line
     format under it that doesn't match, which is a genuine CLI output
     format mismatch worth flagging loudly. Still returns empty rather
     than guessing, same as the no-header case - the caller's own
-    latest-version lookup is the fallback either way."""
+    latest-version lookup is the fallback either way. Also saves the raw
+    output as a diagnostic, so a future occurrence has actual text to fix
+    the regex from instead of another guess."""
     warnings = []
     monkeypatch.setattr(versions_module.log, "warn", warnings.append)
+    monkeypatch.setattr(versions_module.paths, "diagnostics_dir", lambda: tmp_path)
 
-    result = extract_cli_versions("Most common compatible versions:\n* v19.35.36 - 5 patches\n\n")
+    raw_output = "Most common compatible versions:\n* v19.35.36 - 5 patches\n\n"
+    result = extract_cli_versions(raw_output, app_slug="instagram")
 
     assert result == []
     assert len(warnings) == 1
+    dumped = list(tmp_path.glob("list-versions-instagram-*.txt"))
+    assert len(dumped) == 1
+    assert dumped[0].read_text() == raw_output
 
 
 def test_extract_versions_empty_input():

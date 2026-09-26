@@ -1,3 +1,4 @@
+from morphe_builder.fetchers import apkmirror
 from morphe_builder.fetchers.apkmirror import (
     _closest,
     _extract_variant_url,
@@ -8,6 +9,7 @@ from morphe_builder.fetchers.apkmirror import (
     _variant_rows,
     _version_from_href,
 )
+from morphe_builder.fetchers.flaresolverr import Cleared
 
 
 def _row(name, arch, dpi, href, badge=None):
@@ -108,6 +110,46 @@ def test_listing_candidates_resolves_relative_hrefs():
     assert candidates == [
         ("https://www.apkmirror.com/apk/google-inc/youtube/youtube-19-35-36-release/", "YouTube 19.35.36")
     ]
+
+
+async def test_get_latest_listing_picks_the_highest_version_not_the_first_candidate(monkeypatch):
+    """Reproduces a real regression: listing_candidates() just collects
+    every "-release/" link on the page in raw DOM order, which isn't
+    reliably newest-first - a real run had an ancient release (here:
+    Instagram 1.1.1, its very first-ever release) appear ahead of the
+    actual latest one, and the old "take the first candidate" logic
+    picked it, which then failed signature verification. This must pick
+    the numerically highest version regardless of where it sits on the
+    page."""
+    html = """<html><body>
+        <div><a href="/apk/instagram/instagram/instagram-1-1-1-release/instagram-1-1-1-android-apk-download/">Instagram 1.1.1</a></div>
+        <div><a href="/apk/instagram/instagram/instagram-439-0-0-37-89-release/instagram-439-0-0-37-89-android-apk-download/">Instagram 439.0.0.37.89</a></div>
+    </body></html>"""
+
+    async def fake_fetch(url, label, **kwargs):
+        return Cleared(url=url, status=200, html=html, user_agent="", cookies=[])
+
+    monkeypatch.setattr(apkmirror, "_fetch", fake_fetch)
+
+    result = await apkmirror.get_latest_listing("instagram", {"org": "instagram", "slug": "instagram"})
+
+    assert result["version"] == "439.0.0.37.89"
+
+
+async def test_get_latest_listing_ignores_a_different_apps_release_link(monkeypatch):
+    html = """<html><body>
+        <div><a href="/apk/some-dev/similar-app/similar-app-99-0-release/">Similar App 99.0</a></div>
+        <div><a href="/apk/acme-inc/acme-app/acme-app-1-2-3-release/">Acme App 1.2.3</a></div>
+    </body></html>"""
+
+    async def fake_fetch(url, label, **kwargs):
+        return Cleared(url=url, status=200, html=html, user_agent="", cookies=[])
+
+    monkeypatch.setattr(apkmirror, "_fetch", fake_fetch)
+
+    result = await apkmirror.get_latest_listing("acme-app", {"org": "acme-inc", "slug": "acme-app"})
+
+    assert result["version"] == "1.2.3"
 
 
 def test_closest_walks_up_to_matching_ancestor():

@@ -1,9 +1,10 @@
 import re
+import time
 
-from .. import log
+from .. import log, paths
 
 
-def extract_cli_versions(output: str) -> list[dict]:
+def extract_cli_versions(output: str, app_slug: str | None = None) -> list[dict]:
     """Parses the CLI's "Most common compatible versions" section: the
     patches' own recorded compatibility data, which matters regardless of
     where the APK itself is downloaded from - a version the patches
@@ -15,6 +16,9 @@ def extract_cli_versions(output: str) -> list[dict]:
     to its own actual-latest-version lookup in that case (APKMirror's
     real listing, or a GitHub repo's real latest release), which is more
     trustworthy than guessing a version out of unrelated CLI banner text.
+    app_slug is optional and only used to name a diagnostics dump if the
+    section header is found but unparseable - pass it when available so
+    that dump is easy to trace back to the app it came from.
     """
     results = []
     lines = output.split("\n")
@@ -45,14 +49,28 @@ def extract_cli_versions(output: str) -> list[dict]:
         # "X.Y.Z (N patches)" line format - a real mismatch between this
         # parser and the CLI's actual output, worth flagging loudly
         # rather than silently falling through as if there were simply
-        # no data.
+        # no data. Save the raw text too: without it, a fix here is a
+        # guess, not a diagnosis.
         log.warn(
             "Found the 'Most common compatible versions' section but couldn't parse any lines under it - the "
             "CLI's output format may have changed. Falling through to the actual latest version instead of a "
             "patch-recommended one."
         )
+        _save_diagnostic_output(output, app_slug)
 
     return results
+
+
+def _save_diagnostic_output(output: str, app_slug: str | None) -> None:
+    try:
+        diagnostics_dir = paths.diagnostics_dir()
+        diagnostics_dir.mkdir(parents=True, exist_ok=True)
+        label = f"list-versions-{app_slug or 'unknown'}"
+        path = diagnostics_dir / f"{label}-{int(time.time())}.txt"
+        path.write_text(output or "", encoding="utf-8", errors="replace")
+        log.info(f"Diagnostic CLI output saved: {path}")
+    except OSError as e:
+        log.warn(f"Could not save diagnostic CLI output: {e}")
 
 
 def _version_core(version: str) -> str:

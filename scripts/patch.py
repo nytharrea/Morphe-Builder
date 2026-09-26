@@ -80,7 +80,7 @@ async def process_build(build_key: str, desktop: str, patches: list[str]) -> dic
                     f"skipping CLI-reported versions: {' | '.join(stderr_tail) or '(no output)'}"
                 )
             else:
-                versions = extract_cli_versions(result.stdout or "")
+                versions = extract_cli_versions(result.stdout or "", app_slug)
                 if versions:
                     selected_version = pick_latest_version(versions)
         except Exception as e:
