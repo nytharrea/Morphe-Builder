@@ -150,6 +150,72 @@ def test_command_includes_patches_arch_exclude_and_enable_flags(monkeypatch, tmp
     assert cmd[-1] == "input.apk"
 
 
+def test_options_become_dash_o_flags_grouped_with_an_enable_for_their_patch(monkeypatch, tmp_path):
+    """revanced-cli associates -O with the -e immediately before it (see
+    docs: `-e "Patch name" -Okey1=value1 -Okey2=value2`), not by looking
+    the patch name up - so each options-bearing patch needs its own -e
+    right next to its own -O flags, grouped together."""
+    monkeypatch.setattr(patcher.settings, "ks_path", None)
+    monkeypatch.setattr(patcher.log, "warn", lambda msg: None)
+
+    apk_path, captured = _patch_common(monkeypatch, tmp_path, ["INFO: Saved to {apk_path}"])
+    patcher.patch_apk(
+        "desktop.jar",
+        ["patch-a.mpp"],
+        "input.apk",
+        options={"Custom branding.App name": "YouTube Özel", "Custom branding.App icon": "Black"},
+    )
+
+    cmd = captured["cmd"]
+    assert "-OApp name=YouTube Özel" in cmd
+    assert "-OApp icon=Black" in cmd
+    enable_idx = cmd.index("Custom branding") - 1
+    assert cmd[enable_idx] == "--enable"
+    # both -O flags for this one patch must be grouped right after its own
+    # --enable, not split apart by some other patch's flags in between
+    assert cmd[enable_idx + 2 : enable_idx + 4] == ["-OApp name=YouTube Özel", "-OApp icon=Black"]
+
+
+def test_options_for_different_patches_are_not_interleaved(monkeypatch, tmp_path):
+    monkeypatch.setattr(patcher.settings, "ks_path", None)
+    monkeypatch.setattr(patcher.log, "warn", lambda msg: None)
+
+    apk_path, captured = _patch_common(monkeypatch, tmp_path, ["INFO: Saved to {apk_path}"])
+    patcher.patch_apk(
+        "desktop.jar",
+        ["patch-a.mpp"],
+        "input.apk",
+        options={"Patch A.key1": "v1", "Patch B.key2": "v2", "Patch A.key3": "v3"},
+    )
+
+    cmd = captured["cmd"]
+    idx_a = cmd.index("Patch A")
+    assert cmd[idx_a + 1 : idx_a + 3] == ["-Okey1=v1", "-Okey3=v3"]
+
+
+def test_option_with_none_value_omits_the_equals_sign(monkeypatch, tmp_path):
+    """revanced-cli's own null-value convention: omit the value entirely
+    (-Okey, not -Okey=) rather than passing the string "None"."""
+    monkeypatch.setattr(patcher.settings, "ks_path", None)
+    monkeypatch.setattr(patcher.log, "warn", lambda msg: None)
+
+    apk_path, captured = _patch_common(monkeypatch, tmp_path, ["INFO: Saved to {apk_path}"])
+    patcher.patch_apk("desktop.jar", ["patch-a.mpp"], "input.apk", options={"Some patch.flag": None})
+
+    assert "-Oflag" in captured["cmd"]
+    assert "-Oflag=None" not in captured["cmd"]
+
+
+def test_options_key_without_a_dot_raises_a_clear_error(monkeypatch, tmp_path):
+    monkeypatch.setattr(patcher.settings, "ks_path", None)
+    monkeypatch.setattr(patcher.log, "warn", lambda msg: None)
+
+    _patch_common(monkeypatch, tmp_path, ["INFO: Saved to {apk_path}"])
+
+    with pytest.raises(ValueError, match="Patch name.optionKey"):
+        patcher.patch_apk("desktop.jar", ["patch-a.mpp"], "input.apk", options={"NoDotHere": "x"})
+
+
 def test_raises_when_zero_patches_applied(monkeypatch, tmp_path):
     monkeypatch.setattr(patcher.settings, "ks_path", None)
     monkeypatch.setattr(patcher.log, "warn", lambda msg: None)

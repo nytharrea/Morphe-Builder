@@ -4,15 +4,29 @@ from .. import log
 
 
 def extract_cli_versions(output: str) -> list[dict]:
+    """Parses the CLI's "Most common compatible versions" section: the
+    patches' own recorded compatibility data, which matters regardless of
+    where the APK itself is downloaded from - a version the patches
+    weren't written against can fail to apply, or apply but misbehave,
+    even if it's otherwise the newest release. Returns an empty list when
+    the CLI doesn't print this section at all (routine: many apps,
+    especially ones with a single broadly-compatible patch, have no
+    per-version data to report) - the caller is expected to fall through
+    to its own actual-latest-version lookup in that case (APKMirror's
+    real listing, or a GitHub repo's real latest release), which is more
+    trustworthy than guessing a version out of unrelated CLI banner text.
+    """
     results = []
     lines = output.split("\n")
     in_section = False
+    found_header = False
 
     for line in lines:
         trimmed = line.strip()
 
         if trimmed.startswith("Most common compatible versions"):
             in_section = True
+            found_header = True
             continue
 
         if in_section and not trimmed:
@@ -26,15 +40,17 @@ def extract_cli_versions(output: str) -> list[dict]:
             if match:
                 results.append({"version": match.group(1), "patches": int(match.group(2))})
 
-    if not results:
-        fallback = re.findall(r"\d+(?:\.\d+){1,4}(?:-[a-zA-Z]+\.\d+)?", output)
-        if fallback:
-            log.warn(
-                "Could not parse the 'Most common compatible versions' section - falling back to loosely "
-                f"matching any version-looking number in the raw CLI output ({len(fallback)} found). This can "
-                "pick up unrelated numbers (dates, sizes, banners), so double-check the version this selects."
-            )
-        return [{"version": v, "patches": 0} for v in fallback]
+    if found_header and not results:
+        # The header was there but nothing under it matched the expected
+        # "X.Y.Z (N patches)" line format - a real mismatch between this
+        # parser and the CLI's actual output, worth flagging loudly
+        # rather than silently falling through as if there were simply
+        # no data.
+        log.warn(
+            "Found the 'Most common compatible versions' section but couldn't parse any lines under it - the "
+            "CLI's output format may have changed. Falling through to the actual latest version instead of a "
+            "patch-recommended one."
+        )
 
     return results
 

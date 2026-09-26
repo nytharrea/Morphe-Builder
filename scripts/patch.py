@@ -46,6 +46,13 @@ async def process_build(build_key: str, desktop: str, patches: list[str]) -> dic
     selected_version = build.get("force_version")
 
     if not selected_version:
+        # Whatever version the patches actually recommend matters
+        # regardless of where the APK comes from - a version the
+        # patches weren't written against can fail to apply cleanly
+        # even if it's otherwise the newest release. If the CLI has no
+        # such data for this app (extract_cli_versions returns empty),
+        # the branch below falls through to each source's own real
+        # latest-version lookup instead.
         try:
             patch_flags = []
             for p in patches:
@@ -107,6 +114,7 @@ async def process_build(build_key: str, desktop: str, patches: list[str]) -> dic
         apk_path,
         exclude=build.get("exclude"),
         enable=build.get("enable"),
+        options=build.get("options"),
         arch=build["arch"],
     )
 

@@ -147,6 +147,31 @@ def test_force_version_and_force_build_default_to_none(monkeypatch, tmp_path):
     assert builds["example"]["force_build"] is None
 
 
+def test_options_defaults_to_empty_dict_when_absent(monkeypatch, tmp_path):
+    _, builds = _load(monkeypatch, tmp_path, {"myapp": _minimal_app()})
+    assert builds["example"]["options"] == {}
+
+
+def test_options_are_loaded_from_yaml(monkeypatch, tmp_path):
+    app = _minimal_app(
+        builds=[
+            {
+                "key": "example",
+                "patch_sources": ["morphe"],
+                "options": {
+                    "Custom branding.App name": "YouTube Özel",
+                    "Custom branding.App icon": "Black",
+                },
+            }
+        ]
+    )
+    _, builds = _load(monkeypatch, tmp_path, {"myapp": app})
+    assert builds["example"]["options"] == {
+        "Custom branding.App name": "YouTube Özel",
+        "Custom branding.App icon": "Black",
+    }
+
+
 def test_github_apk_source_is_preserved_as_is(monkeypatch, tmp_path):
     app = _minimal_app(apk_source={"type": "github", "owner": "SomeOrg", "repo": "some-repo"})
     _, builds = _load(monkeypatch, tmp_path, {"myapp": app})

@@ -89,3 +89,24 @@ def test_apk_source_with_no_recognized_type_has_no_field_requirements(monkeypatc
     have needed."""
     monkeypatch.setitem(validate.BUILDS, "youtube", {**_youtube_build(), "apk_source": {"type": "carrier-pigeon"}})
     validate.validate_catalog()
+
+
+def test_valid_options_pass(monkeypatch):
+    monkeypatch.setitem(
+        validate.BUILDS,
+        "youtube",
+        {**_youtube_build(), "options": {"Custom branding.App name": "YouTube Özel"}},
+    )
+    validate.validate_catalog()
+
+
+def test_options_as_a_list_instead_of_a_dict_is_caught(monkeypatch):
+    monkeypatch.setitem(validate.BUILDS, "youtube", {**_youtube_build(), "options": ["not-a-dict"]})
+    with pytest.raises(validate.ConfigError, match="should be a mapping"):
+        validate.validate_catalog()
+
+
+def test_options_key_without_a_dot_is_caught(monkeypatch):
+    monkeypatch.setitem(validate.BUILDS, "youtube", {**_youtube_build(), "options": {"NoDotHere": "x"}})
+    with pytest.raises(validate.ConfigError, match="Patch name.optionKey"):
+        validate.validate_catalog()

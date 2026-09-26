@@ -17,6 +17,7 @@ def patch_apk(
     apk: str,
     exclude: list[str] | None = None,
     enable: list[str] | None = None,
+    options: dict[str, str | None] | None = None,
     arch: str = "arm64-v8a",
 ) -> str:
     log.patch(f"Patching APK & stripping unused architectures ({arch} only)...")
@@ -54,6 +55,26 @@ def patch_apk(
 
     for p in enable or []:
         cmd += ["--enable", p]
+
+    options_by_patch: dict[str, list[tuple[str, str | None]]] = {}
+    for dotted_key, value in (options or {}).items():
+        patch_name, sep, option_key = dotted_key.partition(".")
+        if not sep:
+            raise ValueError(
+                f'apk_source options key {dotted_key!r} must be "Patch name.optionKey" (no "." found).'
+            )
+        options_by_patch.setdefault(patch_name, []).append((option_key, value))
+
+    for patch_name, patch_options in options_by_patch.items():
+        # -O is associated with the -e immediately before it, not looked up
+        # by patch name - so this patch needs its own -e here even if it's
+        # already in `enable` above (harmless: enabling an already-enabled
+        # patch again is a no-op), grouped with all of its own -O flags
+        # together, matching revanced-cli's own documented convention:
+        # -e "Patch name" -Okey1=value1 -Okey2=value2
+        cmd += ["--enable", patch_name]
+        for option_key, value in patch_options:
+            cmd.append(f"-O{option_key}" if value is None else f"-O{option_key}={value}")
 
     cmd.append(apk)
 

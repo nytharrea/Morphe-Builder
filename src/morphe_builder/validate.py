@@ -48,6 +48,19 @@ def validate_catalog() -> None:
                     f"character instead of one per patch name)."
                 )
 
+        options = build.get("options")
+        if options is not None:
+            if not isinstance(options, dict):
+                problems.append(f'Build "{key}".options should be a mapping, got {type(options).__name__}.')
+            else:
+                for dotted_key in options:
+                    if not isinstance(dotted_key, str) or "." not in dotted_key:
+                        problems.append(
+                            f'Build "{key}".options key {dotted_key!r} should be "Patch name.optionKey" '
+                            f'(e.g. "Custom branding.App name") - patch_apk() needs both parts to build the '
+                            f"revanced-cli -O flag."
+                        )
+
         # catalog.py's own loader already rejects an apk_source.type that
         # isn't "apkmirror" or "github" - what it doesn't check is whether
         # the fields *that type* actually needs are present. Missing ones

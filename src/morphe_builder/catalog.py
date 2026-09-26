@@ -63,6 +63,7 @@ class BuildConfig(TypedDict):
     patch_sources: list[str]
     exclude: list[str]
     enable: list[str]
+    options: dict[str, str | None]
     force_version: str | None
     force_build: str | None
 
@@ -150,6 +151,7 @@ def _load_builds() -> dict[str, BuildConfig]:
                     "patch_sources": list(build["patch_sources"]),
                     "exclude": list(build.get("exclude") or []),
                     "enable": list(build.get("enable") or []),
+                    "options": dict(build.get("options") or {}),
                     "force_version": build.get("force_version"),
                     "force_build": build.get("force_build"),
                 }

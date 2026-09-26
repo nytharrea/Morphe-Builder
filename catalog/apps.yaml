@@ -50,6 +50,9 @@ youtube:
   builds:
     - key: "youtube"
       patch_sources: ["morphe"]
+      options:
+        "Custom branding.App name": "YouTube Özel"
+        "Custom branding.App icon": "Black"
 
 youtube-music:
   pkg: "com.google.android.apps.youtube.music"
