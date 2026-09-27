@@ -11,9 +11,7 @@ from .. import log, paths
 # The "[versionCodes: ...]" segment is only present when the patches
 # bundle records per-ABI version codes for that version, and the count is
 # singular ("1 patch") rather than plural exactly when it's 1.
-_VERSION_LINE_RE = re.compile(
-    r"^(\d+(?:\.\d+){1,4}(?:-[a-zA-Z]+\.\d+)?)(?:\s+\[[^\]]*\])?\s+\((\d+)\s+patch(?:es)?\)$"
-)
+_VERSION_LINE_RE = re.compile(r"^(.+?)(?:\s+\[[^\]]*\])?\s+\((\d+)\s+patch(?:es)?\)$")
 
 
 def extract_cli_versions(output: str, app_slug: str | None = None) -> list[dict]:

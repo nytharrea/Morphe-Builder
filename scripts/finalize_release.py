@@ -5,6 +5,7 @@ then publishes (or updates) the one GitHub Release. Run as
 
 import asyncio
 import json
+import re
 from pathlib import Path
 
 from morphe_builder import catalog, log, notify
@@ -101,6 +102,11 @@ def find_failure_reasons(artifacts_dir: Path) -> dict[str, str]:
     return reasons
 
 
+def _neutralize_github_mentions(text: str) -> str:
+    """Remove @user mentions so GitHub does not list them as release Contributors."""
+    return re.sub(r"@([A-Za-z0-9_-]+)", r"\1", text)
+
+
 async def main():
     if not settings.release_tag or not settings.release_name:
         raise RuntimeError("Missing RELEASE_TAG/RELEASE_NAME (expected to be set by prepare_release.py's output)")
@@ -146,16 +152,21 @@ async def main():
                 prerelease=True,
                 match=lambda n: n.endswith(".mpp"),
             )
-            return (
-                f"\n<details>\n<summary>{label} Release Notes ({asset['tag']})</summary>\n<br>\n\n"
-                f"{asset['body']}\n\n</details>\n"
-            )
+            notes = _neutralize_github_mentions(asset["body"] or "")
+            # Avoid angle-bracket HTML in source so paste tools cannot mangle tags.
+            open_tag = chr(60) + "details" + chr(62) + "\n"
+            open_tag += chr(60) + "summary" + chr(62)
+            open_tag += "{} Release Notes ({})".format(label, asset["tag"])
+            open_tag += chr(60) + "/summary" + chr(62) + "\n" + chr(60) + "br" + chr(62) + "\n\n"
+            close_tag = "\n\n" + chr(60) + "/details" + chr(62) + "\n"
+            return "\n" + open_tag + notes + close_tag
         except Exception as e:
             log.warn(f"Could not fetch release notes for {label}: {e}")
             return ""
 
     source_keys = [key for key in sorted(used_sources) if key in catalog.PATCH_SOURCES]
     body += "".join(await asyncio.gather(*(_fetch_release_notes(key) for key in source_keys)))
+    body = _neutralize_github_mentions(body)
 
     log.step(f"Creating release: {release_tag}")
     release = await create_new_release(release_tag, release_name, body, draft=False)

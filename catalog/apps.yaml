@@ -59,8 +59,8 @@ youtube:
         # dark, light, play, play_black, original, custom, or omit for
         # automatic) - the capitalized display labels ("Black") are not
         # valid values, only map keys for a dropdown.
-        "Custom branding.customName": "YouTube Özel"
-        "Custom branding.appIcon": "black"
+        "Custom branding.customName": "YouTube"
+        "Custom branding.appIcon": "Original"
 
 youtube-music:
   pkg: "com.google.android.apps.youtube.music"
@@ -74,6 +74,9 @@ youtube-music:
   builds:
     - key: "youtube-music"
       patch_sources: ["morphe"]
+      options:
+        "Custom branding.customName": "YT Music"
+        "Custom branding.appIcon": "Original"
 
 reddit:
   pkg: "com.reddit.frontpage"
@@ -110,7 +113,7 @@ twitter:
       enable: ["Bring back twitter", "Disunify xchat system", "Export all activities"]
     - key: "twitter-x"
       patch_sources: ["piko-newx", "morphe"]
-      force_version: "12.27.0-prod.01"
+      force_version: "12.29.1-prod.01"
       enable: ["Disable Play Store updates"]
       display_name: "Twitter-X"
 
