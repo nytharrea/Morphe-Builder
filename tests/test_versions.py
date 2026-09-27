@@ -24,6 +24,43 @@ def test_extract_versions_ignores_non_matching_lines_in_section():
     assert result == [{"version": "19.35.36", "patches": 5}]
 
 
+def test_extract_versions_handles_singular_patch_count():
+    """morphe-desktop's own formatter (ListCompatibleVersions.kt) prints
+    "1 patch" (singular), not "1 patches"."""
+    output = "Most common compatible versions:\n19.35.34 (1 patch)\n\n"
+    assert extract_cli_versions(output) == [{"version": "19.35.34", "patches": 1}]
+
+
+def test_extract_versions_handles_the_versioncodes_bracket(monkeypatch):
+    """When the patches bundle records per-ABI version codes for a
+    version, morphe-desktop inserts a " [versionCodes: ABI=code, ...]"
+    segment between the version and the patch count (PatchExtensions.kt's
+    versionCodesFor) - this must not block the count from parsing, and
+    must not be mistaken for a format mismatch."""
+    warnings = []
+    monkeypatch.setattr(versions_module.log, "warn", warnings.append)
+
+    output = (
+        "Most common compatible versions:\n"
+        "439.0.0.37.89 [versionCodes: ARM64_V8A=331058270, ARMEABI_V7A=331058271] (5 patches)\n\n"
+    )
+    assert extract_cli_versions(output) == [{"version": "439.0.0.37.89", "patches": 5}]
+    assert warnings == []
+
+
+def test_extract_versions_returns_empty_for_any_without_warning(monkeypatch):
+    """morphe-desktop prints the literal line "Any" (not a version line
+    at all) when a package's patches are all universal/any-version -
+    legitimate, not a format mismatch, so this must not warn."""
+    warnings = []
+    monkeypatch.setattr(versions_module.log, "warn", warnings.append)
+
+    output = "Most common compatible versions:\nAny\n\n"
+
+    assert extract_cli_versions(output) == []
+    assert warnings == []
+
+
 def test_extract_versions_returns_empty_when_no_section_header():
     """Routine, not a failure: many apps (confirmed against real CI runs -
     roughly half of this catalog's apps hit this every run) have no

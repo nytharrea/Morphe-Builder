@@ -51,8 +51,16 @@ youtube:
     - key: "youtube"
       patch_sources: ["morphe"]
       options:
-        "Custom branding.App name": "YouTube Özel"
-        "Custom branding.App icon": "Black"
+        # Keys are the patch's real option key (BaseCustomBrandingPatch.kt's
+        # stringOption(key = ...) in morphe-patches), not its UI title -
+        # "App name"/"App icon" are only shown in a GUI, the CLI needs
+        # customName/appIcon. appIcon's value must be one of the lowercase
+        # internal names (see iconStyleValues in that same file: black,
+        # dark, light, play, play_black, original, custom, or omit for
+        # automatic) - the capitalized display labels ("Black") are not
+        # valid values, only map keys for a dropdown.
+        "Custom branding.customName": "YouTube Özel"
+        "Custom branding.appIcon": "black"
 
 youtube-music:
   pkg: "com.google.android.apps.youtube.music"

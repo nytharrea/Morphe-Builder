@@ -167,13 +167,13 @@ def test_options_become_dash_o_flags_grouped_with_an_enable_for_their_patch(monk
     )
 
     cmd = captured["cmd"]
-    assert "-OApp name=YouTube Özel" in cmd
-    assert "-OApp icon=Black" in cmd
+    assert '-OApp name="YouTube Özel"' in cmd
+    assert '-OApp icon="Black"' in cmd
     enable_idx = cmd.index("Custom branding") - 1
     assert cmd[enable_idx] == "--enable"
     # both -O flags for this one patch must be grouped right after its own
     # --enable, not split apart by some other patch's flags in between
-    assert cmd[enable_idx + 2 : enable_idx + 4] == ["-OApp name=YouTube Özel", "-OApp icon=Black"]
+    assert cmd[enable_idx + 2 : enable_idx + 4] == ['-OApp name="YouTube Özel"', '-OApp icon="Black"']
 
 
 def test_options_for_different_patches_are_not_interleaved(monkeypatch, tmp_path):
@@ -190,7 +190,7 @@ def test_options_for_different_patches_are_not_interleaved(monkeypatch, tmp_path
 
     cmd = captured["cmd"]
     idx_a = cmd.index("Patch A")
-    assert cmd[idx_a + 1 : idx_a + 3] == ["-Okey1=v1", "-Okey3=v3"]
+    assert cmd[idx_a + 1 : idx_a + 3] == ['-Okey1="v1"', '-Okey3="v3"']
 
 
 def test_option_with_none_value_omits_the_equals_sign(monkeypatch, tmp_path):
@@ -204,6 +204,37 @@ def test_option_with_none_value_omits_the_equals_sign(monkeypatch, tmp_path):
 
     assert "-Oflag" in captured["cmd"]
     assert "-Oflag=None" not in captured["cmd"]
+
+
+def test_option_values_are_quoted_against_the_clis_own_type_inference(monkeypatch, tmp_path):
+    """The real OptionValueConverter (morphe-desktop's CommandUtils.kt)
+    type-infers an unquoted -O value: "true"/"false" become booleans,
+    anything parseable as a number becomes one, and a value ending in
+    "f" or "L" is parsed as a float/long - which would crash on a value
+    like "Half" (tries to parse "Hal" as a float). Every value from the
+    catalog is a plain string and must reach the CLI as one regardless
+    of what it looks like."""
+    monkeypatch.setattr(patcher.settings, "ks_path", None)
+    monkeypatch.setattr(patcher.log, "warn", lambda msg: None)
+
+    apk_path, captured = _patch_common(monkeypatch, tmp_path, ["INFO: Saved to {apk_path}"])
+    patcher.patch_apk(
+        "desktop.jar",
+        ["patch-a.mpp"],
+        "input.apk",
+        options={
+            "Some patch.a": "true",
+            "Some patch.b": "123",
+            "Some patch.c": "Half",  # ends in "f" - would crash the real converter unquoted
+            "Some patch.d": "9001L",  # would be parsed as a Long unquoted
+        },
+    )
+
+    cmd = captured["cmd"]
+    assert '-Oa="true"' in cmd
+    assert '-Ob="123"' in cmd
+    assert '-Oc="Half"' in cmd
+    assert '-Od="9001L"' in cmd
 
 
 def test_options_key_without_a_dot_raises_a_clear_error(monkeypatch, tmp_path):

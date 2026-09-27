@@ -184,6 +184,6 @@ def listing_candidates(tree: lxml.html.HtmlElement, base_url: str) -> list[tuple
         abs_href = abs_url(base_url, href)
         if abs_href:
             results.append((abs_href, row.text_content() or ""))
-        if len(results) >= 15:
+        if len(results) >= 60:
             break
     return results

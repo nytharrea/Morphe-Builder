@@ -3,27 +3,45 @@ import time
 
 from .. import log, paths
 
+# Matches a "Most common compatible versions" entry line from morphe-desktop's
+# ListCompatibleVersions.kt, e.g.:
+#   19.35.36 (5 patches)
+#   19.35.35 [versionCodes: ARM64_V8A=331058270, ARMEABI_V7A=331058271] (3 patches)
+#   19.35.34 (1 patch)
+# The "[versionCodes: ...]" segment is only present when the patches
+# bundle records per-ABI version codes for that version, and the count is
+# singular ("1 patch") rather than plural exactly when it's 1.
+_VERSION_LINE_RE = re.compile(
+    r"^(\d+(?:\.\d+){1,4}(?:-[a-zA-Z]+\.\d+)?)(?:\s+\[[^\]]*\])?\s+\((\d+)\s+patch(?:es)?\)$"
+)
+
 
 def extract_cli_versions(output: str, app_slug: str | None = None) -> list[dict]:
     """Parses the CLI's "Most common compatible versions" section: the
     patches' own recorded compatibility data, which matters regardless of
     where the APK itself is downloaded from - a version the patches
     weren't written against can fail to apply, or apply but misbehave,
-    even if it's otherwise the newest release. Returns an empty list when
-    the CLI doesn't print this section at all (routine: many apps,
-    especially ones with a single broadly-compatible patch, have no
-    per-version data to report) - the caller is expected to fall through
-    to its own actual-latest-version lookup in that case (APKMirror's
+    even if it's otherwise the newest release. Returns an empty list in
+    two routine (not exceptional) cases the caller is expected to fall
+    through from to its own actual-latest-version lookup (APKMirror's
     real listing, or a GitHub repo's real latest release), which is more
-    trustworthy than guessing a version out of unrelated CLI banner text.
+    trustworthy than guessing a version out of unrelated CLI banner text:
+    - The CLI doesn't print the section at all - no patch anywhere
+      mentions this package by name.
+    - The section prints the literal line "Any" - patches mention this
+      package, but only with universal (any-version) compatibility, so
+      there's no specific version to recommend.
     app_slug is optional and only used to name a diagnostics dump if the
-    section header is found but unparseable - pass it when available so
-    that dump is easy to trace back to the app it came from.
+    section header is found but unparseable (distinct from the "Any"
+    case above - this is for a genuine, unrecognized line format) - pass
+    it when available so that dump is easy to trace back to the app it
+    came from.
     """
     results = []
     lines = output.split("\n")
     in_section = False
     found_header = False
+    saw_any = False
 
     for line in lines:
         trimmed = line.strip()
@@ -37,20 +55,23 @@ def extract_cli_versions(output: str, app_slug: str | None = None) -> list[dict]
             break
 
         if in_section:
-            match = re.match(
-                r"^(\d+(?:\.\d+){1,4}(?:-[a-zA-Z]+\.\d+)?)\s+\((\d+)\s+patches\)",
-                trimmed,
-            )
+            if trimmed == "Any":
+                # Only universal-compatibility patches for this package -
+                # the CLI's own way of saying "no specific version to
+                # recommend", not a parsing failure.
+                saw_any = True
+                continue
+            match = _VERSION_LINE_RE.match(trimmed)
             if match:
                 results.append({"version": match.group(1), "patches": int(match.group(2))})
 
-    if found_header and not results:
+    if found_header and not results and not saw_any:
         # The header was there but nothing under it matched the expected
-        # "X.Y.Z (N patches)" line format - a real mismatch between this
-        # parser and the CLI's actual output, worth flagging loudly
-        # rather than silently falling through as if there were simply
-        # no data. Save the raw text too: without it, a fix here is a
-        # guess, not a diagnosis.
+        # line format (and it wasn't the legitimate "Any" case either) -
+        # a real mismatch between this parser and the CLI's actual
+        # output, worth flagging loudly rather than silently falling
+        # through as if there were simply no data. Save the raw text
+        # too: without it, a fix here is a guess, not a diagnosis.
         log.warn(
             "Found the 'Most common compatible versions' section but couldn't parse any lines under it - the "
             "CLI's output format may have changed. Falling through to the actual latest version instead of a "

@@ -152,6 +152,29 @@ async def test_get_latest_listing_ignores_a_different_apps_release_link(monkeypa
     assert result["version"] == "1.2.3"
 
 
+async def test_get_latest_listing_falls_back_to_any_candidate_when_none_match_the_app(monkeypatch):
+    """Confirmed against a real production failure: requiring a same-app
+    match can leave nothing to work with if the page's collected
+    candidates happen to be dominated by unrelated content (a
+    related-apps sidebar, say). Falling back to scoring every candidate
+    is still strictly better than the original bug (which trusted
+    whichever candidate came first, same-app or not)."""
+    html = """<html><body>
+        <div><a href="/apk/some-dev/other-app-a/other-app-a-1-0-release/">Other App A 1.0</a></div>
+        <div><a href="/apk/some-dev/other-app-b/other-app-b-2-0-release/">Other App B 2.0</a></div>
+    </body></html>"""
+
+    async def fake_fetch(url, label, **kwargs):
+        return Cleared(url=url, status=200, html=html, user_agent="", cookies=[])
+
+    monkeypatch.setattr(apkmirror, "_fetch", fake_fetch)
+
+    result = await apkmirror.get_latest_listing("acme-app", {"org": "acme-inc", "slug": "acme-app"})
+
+    assert result is not None
+    assert result["version"] == "2.0"
+
+
 def test_closest_walks_up_to_matching_ancestor():
     html = '<html><body><tr><td><a href="#">link</a></td></tr></body></html>'
     a = _parse(html).find(".//a")

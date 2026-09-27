@@ -16,6 +16,7 @@ def _fake_build(app_slug: str, source: dict, force_version: str | None = "1.2.3"
     return {
         "key": app_slug,
         "app_slug": app_slug,
+        "pkg": f"com.example.{app_slug}",
         "display_name": app_slug.title(),
         "arch": "arm64-v8a",
         "icon": "https://example.com/icon.png",

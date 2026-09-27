@@ -339,12 +339,27 @@ async def get_latest_listing(app_slug: str, site: ApkMirrorSite) -> dict | None:
     # run confirmed a page can (and did) surface an ancient release - e.g.
     # an archived "version history" entry - ahead of the actual latest
     # one, which a plain "take the first candidate" pick had no defense
-    # against. Score every same-app candidate by its own parsed version
-    # number and take the highest, instead of trusting page position.
+    # against. Score every candidate by its own parsed version number and
+    # take the highest, instead of trusting page position.
     same_app_path = f"/apk/{site['org']}/{site['slug']}/"
+    same_app = _best_versioned_candidate(candidates, same_app_path)
+    best = same_app if same_app is not None else _best_versioned_candidate(candidates, None)
+
+    if best is None:
+        if cleared is not None:
+            await _save_diagnostic_html(cleared.html, f"no-version-{app_slug}")
+        return None
+
+    _, version, href = best
+    return {"version": version, "href": href}
+
+
+def _best_versioned_candidate(
+    candidates: list[tuple[str, str]], require_path: str | None
+) -> tuple[tuple[int, ...], str, str] | None:
     best: tuple[tuple[int, ...], str, str] | None = None
     for href, text in candidates:
-        if same_app_path not in href:
+        if require_path is not None and require_path not in href:
             continue
         version = _version_from_href(href)
         if not version:
@@ -355,11 +370,4 @@ async def get_latest_listing(app_slug: str, site: ApkMirrorSite) -> dict | None:
         core = _version_sort_key(version)
         if best is None or core > best[0]:
             best = (core, version, href)
-
-    if best is None:
-        if cleared is not None:
-            await _save_diagnostic_html(cleared.html, f"no-version-{app_slug}")
-        return None
-
-    _, version, href = best
-    return {"version": version, "href": href}
+    return best
