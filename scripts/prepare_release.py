@@ -1,29 +1,20 @@
-"""Entry point for the `prepare` job.
+"""Entry point for the `prepare` job: validates catalog/*.yaml, computes
+this run's release tag/name, and emits the build matrix that the `patch`
+job's `strategy.matrix.app` reads via fromJson() - the catalog is now the
+only place a build list is ever written down, so there's nothing left for
+it to drift out of sync with. Run as `python scripts/prepare_release.py`
+from the repo root."""
 
-1. Validate catalog
-2. Download shared assets (jar + .mpp) — needed for version resolution
-3. Run the build planner (compare current versions/config vs previous
-   release's build-manifest.json)
-4. Emit GitHub Actions outputs: tag, name, matrix (only BUILD keys),
-   and write plan.json for the finalize job.
-"""
-
-from __future__ import annotations
-
-import asyncio
 import json
 import os
 import sys
 from datetime import UTC, datetime
-from pathlib import Path
 
-from morphe_builder import log
-from morphe_builder.build.planner import create_plan
-from morphe_builder.settings import settings
+from morphe_builder import catalog, log
 from morphe_builder.validate import validate_catalog
 
 
-async def _async_main() -> None:
+def main():
     try:
         validate_catalog()
     except Exception as e:
@@ -33,32 +24,11 @@ async def _async_main() -> None:
     date = datetime.now(UTC)
     tag = f"build-{date.strftime('%Y-%m-%dT%H-%M-%S')}"
     name = f"Patched APKs - {date.day} {date.strftime('%B %Y')}"
-
-    force_rebuild = os.environ.get("FORCE_REBUILD", "").lower() in ("1", "true", "yes")
-    target_app = settings.target_app or "all"
+    matrix = json.dumps(list(catalog.BUILDS))
 
     log.info(f"Release tag for this run: {tag}")
     log.info(f"Release name for this run: {name}")
-    if force_rebuild:
-        log.warn("FORCE_REBUILD is set — every selected build will run")
-
-    plan = await create_plan(
-        release_tag=tag,
-        release_name=name,
-        force_rebuild=force_rebuild,
-        target_app=target_app,
-    )
-
-    # Empty matrix is valid (everything skipped) — GitHub Actions still runs
-    # finalize so the release snapshot is re-published with carried-over APKs.
-    matrix_keys = plan.to_build
-    matrix = json.dumps(matrix_keys)
-
-    plan_path = Path.cwd() / "plan.json"
-    plan_path.write_text(json.dumps(plan.to_dict(), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    log.info(f"Wrote plan.json ({len(plan.decisions)} decision(s))")
-
-    log.info(f"Build matrix ({len(matrix_keys)} build(s)): {matrix}")
+    log.info(f"Build matrix ({len(catalog.BUILDS)} build(s)): {matrix}")
 
     github_output = os.environ.get("GITHUB_OUTPUT")
     if github_output:
@@ -66,12 +36,6 @@ async def _async_main() -> None:
             f.write(f"tag={tag}\n")
             f.write(f"name={name}\n")
             f.write(f"matrix={matrix}\n")
-            f.write(f"build_count={len(matrix_keys)}\n")
-            f.write(f"skip_count={len(plan.to_skip)}\n")
-
-
-def main() -> None:
-    asyncio.run(_async_main())
 
 
 if __name__ == "__main__":

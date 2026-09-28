@@ -1,14 +1,7 @@
-"""Entry point for the `finalize` job.
-
-Publishes a full release *snapshot*:
-- New APKs produced by this run's matrix jobs
-- Unchanged APKs copied from the previous release (SKIP decisions)
-- build-manifest.json describing every build's version/patch/config state
-
-Run as `python scripts/finalize_release.py` from the repo root.
-"""
-
-from __future__ import annotations
+"""Entry point for the `finalize` job: matches the `patch` job's uploaded
+.apk artifacts back to their build via catalog/apps.yaml's naming rules,
+then publishes (or updates) the one GitHub Release. Run as
+`python scripts/finalize_release.py` from the repo root."""
 
 import asyncio
 import json
@@ -16,8 +9,6 @@ import re
 from pathlib import Path
 
 from morphe_builder import catalog, log, notify
-from morphe_builder.build.models import BuildPlan, BuildRecord, Manifest
-from morphe_builder.build.state import MANIFEST_ASSET_NAME, download_previous_asset, write_manifest
 from morphe_builder.fetchers.release_assets import download_latest_release_asset
 from morphe_builder.release import (
     create_new_release,
@@ -25,7 +16,6 @@ from morphe_builder.release import (
     upload_microg_once,
     upload_patched_apks,
     upload_pothelper_once,
-    upload_with_replace,
 )
 from morphe_builder.settings import settings
 
@@ -94,6 +84,12 @@ def find_patched_apks(artifacts_dir: Path):
 
 
 def find_failure_reasons(artifacts_dir: Path) -> dict[str, str]:
+    """Reads back the dist/status-<build_key>.json files scripts/patch.py
+    writes for a build it couldn't finish - uploaded in the exact same
+    apk-${matrix.app} artifact as a successful build's .apk would be, so
+    they show up right here alongside it with no separate download step.
+    A build with no status file (the matrix job itself crashed before
+    ever reaching patch.py's own try/except, say) just has no reason."""
     reasons: dict[str, str] = {}
     for status_path in sorted(artifacts_dir.rglob("status-*.json")):
         try:
@@ -107,103 +103,8 @@ def find_failure_reasons(artifacts_dir: Path) -> dict[str, str]:
 
 
 def _neutralize_github_mentions(text: str) -> str:
+    """Remove @user mentions so GitHub does not list them as release Contributors."""
     return re.sub(r"@([A-Za-z0-9_-]+)", r"\1", text)
-
-
-def _load_plan() -> BuildPlan | None:
-    """plan.json is produced by prepare and uploaded as a workflow artifact."""
-    candidates = [
-        Path.cwd() / "plan.json",
-        Path.cwd() / "plan" / "plan.json",
-        settings.artifacts_dir / "plan.json",
-    ]
-    # Also search under artifacts/
-    if settings.artifacts_dir.exists():
-        candidates.extend(settings.artifacts_dir.rglob("plan.json"))
-
-    for path in candidates:
-        if path.is_file():
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-                plan = BuildPlan.from_dict(data)
-                log.info(f"Loaded plan from {path} ({len(plan.decisions)} decision(s))")
-                return plan
-            except Exception as e:
-                log.warn(f"Could not parse plan at {path}: {e}")
-    log.warn("No plan.json found — finalize will only publish newly built APKs")
-    return None
-
-
-async def _carry_over_skips(plan: BuildPlan, carry_dir: Path) -> list[dict]:
-    """Download unchanged APKs from the previous release into carry_dir."""
-    carried: list[dict] = []
-    if not plan.previous_release_id:
-        log.info("No previous release id; cannot carry over skipped APKs")
-        return carried
-
-    carry_dir.mkdir(parents=True, exist_ok=True)
-
-    for d in plan.decisions:
-        if d.decision != "skip":
-            continue
-        if not d.previous_apk_name:
-            log.warn(f"Skip decision for {d.build_key} has no previous_apk_name; cannot carry over")
-            continue
-
-        dest = carry_dir / d.previous_apk_name
-        result = await download_previous_asset(plan.previous_release_id, d.previous_apk_name, dest)
-        if result and result.exists():
-            carried.append(
-                {
-                    "build_key": d.build_key,
-                    "display_name": d.display_name,
-                    "version": d.app_version,
-                    "path": str(result),
-                    "name": result.name,
-                    "carried": True,
-                }
-            )
-            log.success(f"Carried over {d.build_key}: {result.name}")
-        else:
-            log.warn(f"Failed to carry over {d.build_key} ({d.previous_apk_name}); it will be missing from this release")
-
-    return carried
-
-
-def _build_manifest(plan: BuildPlan | None, all_apks: list[dict]) -> Manifest:
-    """Assemble the new build-manifest from plan decisions + actual APK names."""
-    by_key = {a["build_key"]: a for a in all_apks}
-    builds: dict[str, BuildRecord] = {}
-
-    if plan:
-        for d in plan.decisions:
-            apk = by_key.get(d.build_key)
-            apk_name = apk["name"] if apk else (d.previous_apk_name or f"{d.display_name}-{d.app_version}.apk")
-            builds[d.build_key] = BuildRecord(
-                build_key=d.build_key,
-                app_version=d.app_version,
-                patches=dict(d.patches),
-                config_hash=d.config_hash,
-                apk_name=apk_name,
-                display_name=d.display_name,
-            )
-    else:
-        # Fallback without plan: only record what we actually have
-        for apk in all_apks:
-            builds[apk["build_key"]] = BuildRecord(
-                build_key=apk["build_key"],
-                app_version=str(apk.get("version") or "unknown"),
-                patches={},
-                config_hash="",
-                apk_name=apk["name"],
-                display_name=apk.get("display_name") or apk["build_key"],
-            )
-
-    return Manifest(
-        schema_version=1,
-        release_tag=settings.release_tag or "",
-        builds=builds,
-    )
 
 
 async def main():
@@ -213,44 +114,32 @@ async def main():
     release_name = settings.release_name
     artifacts_dir = settings.artifacts_dir
 
-    plan = _load_plan()
-
     log.step(f"Scanning {artifacts_dir} for patched APKs...")
     matched, unmatched = find_patched_apks(artifacts_dir)
 
     for name in unmatched:
-        log.warn(f"Unmatched artifact (ignored): {name}")
+        log.warn(f"Could not match asset to a known app: {name}")
 
+    log.info(f"Matched {len(matched)} app asset(s).")
+
+    succeeded_keys = {apk["build_key"] for apk in matched}
+    failed_keys = [key for key in catalog.BUILDS if key not in succeeded_keys]
     failure_reasons = find_failure_reasons(artifacts_dir)
-    failed_keys = sorted(failure_reasons.keys())
 
-    # Carry over skipped APKs from previous release
-    carried: list[dict] = []
-    if plan and plan.to_skip:
-        log.step(f"Carrying over {len(plan.to_skip)} unchanged APK(s) from previous release...")
-        carried = await _carry_over_skips(plan, Path.cwd() / "carried")
+    if not matched:
+        log.error("No apps patched successfully in this run, skipping release creation.")
+        await notify.notify(notify.format_all_failed(release_name, failed_keys, failure_reasons))
+        return
 
-    all_apks = matched + carried
-    log.info(f"Total APKs for this snapshot: {len(all_apks)} (new={len(matched)}, carried={len(carried)})")
+    body = "### Latest Patched APKs\n\n"
+    for apk in matched:
+        icon = catalog.BUILDS[apk["build_key"]]["icon"]
+        body += f'* <img src="{icon}" width="16" height="16"> **{apk["display_name"]}** - `{apk["version"]}`\n'
 
-    # Release body
-    body_lines = [
-        f"**Snapshot** — {len(all_apks)} app(s)",
-        "",
-    ]
-    if plan:
-        body_lines.append(f"- Built this run: {len(plan.to_build)}")
-        body_lines.append(f"- Carried from previous: {len(plan.to_skip)}")
-        body_lines.append("")
-
-    for apk in sorted(all_apks, key=lambda a: a["display_name"].lower()):
-        flag = " (carried)" if apk.get("carried") else ""
-        body_lines.append(f"- **{apk['display_name']}** `{apk['version']}`{flag}")
-
-    body = "\n".join(body_lines) + "\n"
+    body += "\n---\n\n"
 
     used_sources: set[str] = set()
-    for apk in all_apks:
+    for apk in matched:
         used_sources.update(catalog.patch_sources_for(apk["build_key"]))
 
     async def _fetch_release_notes(key: str) -> str:
@@ -264,6 +153,7 @@ async def main():
                 match=lambda n: n.endswith(".mpp"),
             )
             notes = _neutralize_github_mentions(asset["body"] or "")
+            # Avoid angle-bracket HTML in source so paste tools cannot mangle tags.
             open_tag = chr(60) + "details" + chr(62) + "\n"
             open_tag += chr(60) + "summary" + chr(62)
             open_tag += "{} Release Notes ({})".format(label, asset["tag"])
@@ -282,23 +172,13 @@ async def main():
     release = await create_new_release(release_tag, release_name, body, draft=False)
     log.success(f"Release created: {release['tag_name']} (id={release['id']})")
 
-    if all_apks:
-        log.step(f"Uploading {len(all_apks)} APK(s) (up to {settings.upload_concurrency} at once)...")
-        await upload_patched_apks(release, [apk["path"] for apk in all_apks])
+    log.step(f"Uploading {len(matched)} patched APK(s) (up to {settings.upload_concurrency} at once)...")
+    await upload_patched_apks(release, [apk["path"] for apk in matched])
 
-    # Always publish MicroG / PotHelper when youtube builds are present in the snapshot
-    youtube_keys = {"youtube", "youtube-music"}
-    if any(apk["build_key"] in youtube_keys for apk in all_apks):
+    if any(apk["build_key"] in ("youtube", "youtube-music") for apk in matched):
         await asyncio.gather(upload_microg_once(release), upload_pothelper_once(release))
 
-    # Write and upload build-manifest.json
-    manifest = _build_manifest(plan, all_apks)
-    manifest_path = Path.cwd() / MANIFEST_ASSET_NAME
-    write_manifest(manifest_path, manifest)
-    log.step("Uploading build-manifest.json...")
-    await upload_with_replace(release, str(manifest_path))
-
-    log.success("Release snapshot published!")
+    log.success("All apps successfully published under one release!")
 
     try:
         await delete_other_releases(release["id"])
@@ -309,7 +189,7 @@ async def main():
     release_url = release.get("html_url") or (
         f"https://github.com/{settings.github_repository}/releases/tag/{release_tag}"
     )
-    await notify.notify(notify.format_summary(release_name, release_url, all_apks, failed_keys, failure_reasons))
+    await notify.notify(notify.format_summary(release_name, release_url, matched, failed_keys, failure_reasons))
 
 
 if __name__ == "__main__":

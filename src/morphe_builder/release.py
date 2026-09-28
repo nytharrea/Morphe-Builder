@@ -102,24 +102,6 @@ async def create_new_release(tag: str, release_name: str, release_body: str = ""
     return data
 
 
-async def get_latest_release(*, include_drafts: bool = False) -> dict | None:
-    """Return the most recently published release (by published_at / created_at).
-
-    Drafts are skipped by default so a half-finished finalize does not become
-    the "previous" state for the next prepare run.
-    """
-    _assert_configured()
-    releases = await list_releases()
-    candidates = [r for r in releases if include_drafts or not r.get("draft")]
-    if not candidates:
-        return None
-
-    def _sort_key(r: dict) -> str:
-        return r.get("published_at") or r.get("created_at") or ""
-
-    return max(candidates, key=_sort_key)
-
-
 async def list_releases() -> list[dict]:
     async with new_session(timeout=30) as client:
         res = await client.get(

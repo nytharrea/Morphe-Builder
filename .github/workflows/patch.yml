@@ -2,46 +2,19 @@ name: Patch
 
 on:
   workflow_dispatch:
-    inputs:
-      force_rebuild:
-        description: "Force rebuild of every selected app (ignore skip)"
-        required: false
-        default: "false"
-        type: boolean
-      target_app:
-        description: "Build only this app key, or 'all'"
-        required: false
-        default: "all"
-        type: string
 
 jobs:
   prepare:
     runs-on: ubuntu-26.04
-    timeout-minutes: 40
+    timeout-minutes: 15
 
     permissions:
       contents: read
-
-    services:
-      flaresolverr:
-        image: ghcr.io/flaresolverr/flaresolverr:latest
-        ports:
-          - 8191:8191
-        env:
-          LOG_LEVEL: info
-        options: >-
-          --health-cmd "curl -f http://localhost:8191/health || exit 1"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
-          --health-start-period 15s
 
     outputs:
       release_tag: ${{ steps.plan.outputs.tag }}
       release_name: ${{ steps.plan.outputs.name }}
       build_matrix: ${{ steps.plan.outputs.matrix }}
-      build_count: ${{ steps.plan.outputs.build_count }}
-      skip_count: ${{ steps.plan.outputs.skip_count }}
 
     steps:
       - name: Checkout
@@ -64,21 +37,12 @@ jobs:
       - name: Install morphe_builder package (editable, no dependency resolution)
         run: pip install -e . --no-deps
 
-      - name: Download shared patch assets (jar + every patch source's .mpp)
-        run: python scripts/download_shared_assets.py
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-
       - name: Validate catalog and compute release plan
         id: plan
         run: python scripts/prepare_release.py
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          FORCE_REBUILD: ${{ inputs.force_rebuild }}
-          TARGET_APP: ${{ inputs.target_app }}
-          FLARESOLVERR_URL: http://localhost:8191/v1
+
+      - name: Download shared patch assets (jar + every patch source's .mpp, once for the whole matrix)
+        run: python scripts/download_shared_assets.py
 
       - name: Upload shared assets artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -90,17 +54,8 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-      - name: Upload build plan
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: build-plan
-          path: plan.json
-          if-no-files-found: error
-          retention-days: 1
-
   patch:
     needs: prepare
-    if: needs.prepare.outputs.build_count != '0'
     runs-on: ubuntu-26.04
     timeout-minutes: 25
 
@@ -229,9 +184,9 @@ jobs:
 
   finalize:
     needs: [prepare, patch]
-    if: always() && needs.prepare.result == 'success'
+    if: always()
     runs-on: ubuntu-26.04
-    timeout-minutes: 40
+    timeout-minutes: 10
 
     permissions:
       contents: write
@@ -262,13 +217,6 @@ jobs:
           pattern: apk-*
           path: artifacts
           merge-multiple: true
-        continue-on-error: true
-
-      - name: Download build plan
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with:
-          name: build-plan
-          path: .
 
       - name: Create release and clean up old releases
         run: python scripts/finalize_release.py
