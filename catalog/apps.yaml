@@ -190,7 +190,7 @@ proton-vpn:
     release_slug: "proton-vpn-fast-secure-vpn"
   builds:
     - key: "proton-vpn"
-      patch_sources: ["hoodles"]
+      patch_sources: ["hxreborn"]
 
 tiktok:
   pkg: "com.zhiliaoapp.musically"
@@ -222,6 +222,9 @@ tiktok:
     - key: "tiktok-kveld"
       patch_sources: ["kveld-tiktok", "morphe"]
       force_version: "46.9.3"
+      enable: ["Disable Play Store updates"]
+    - key: "tiktok-wake-old-hyphen"
+      patch_sources: ["wake-old-hyphen-tiktok", "morphe"]
       enable: ["Disable Play Store updates"]
 
 warp:
@@ -315,7 +318,7 @@ proton-pass:
     slug: "proton-pass-password-manager"
   builds:
     - key: "proton-pass"
-      patch_sources: ["rushi"]
+      patch_sources: ["rushi", "hxreborn"]
 
 notesnook:
   pkg: "com.streetwriters.notesnook"
@@ -344,3 +347,58 @@ fairemail:
   builds:
     - key: "fairemail"
       patch_sources: ["heval"]
+
+proton-mail:
+  pkg: "ch.protonmail.android"
+  display_name: "Proton Mail"
+  arch: "arm64-v8a"
+  icon: "https://cdn.simpleicons.org/protonmail"
+  apk_source:
+    type: apkmirror
+    org: "proton-technologies-ag"
+    slug: "protonmail-encrypted-email"
+    release_slug: "proton-mail-encrypted-email"
+  builds:
+    - key: "proton-mail"
+      patch_sources: ["hxreborn"]
+      force_version: "7.11.5"
+
+facebook:
+  pkg: "com.facebook.katana"
+  display_name: "Facebook"
+  arch: "arm64-v8a"
+  icon: "https://cdn.simpleicons.org/facebook"
+  apk_source:
+    type: apkmirror
+    org: "facebook-2"
+    slug: "facebook"
+  builds:
+    - key: "facebook"
+      patch_sources: ["hushfacebook"]
+
+messenger:
+  pkg: "com.facebook.orca"
+  display_name: "Messenger"
+  arch: "arm64-v8a"
+  icon: "https://cdn.simpleicons.org/messenger"
+  apk_source:
+    type: apkmirror
+    org: "facebook-2"
+    slug: "messenger"
+    release_slug: "facebook-messenger"
+  builds:
+    - key: "messenger"
+      patch_sources: ["hushmessenger"]
+
+symfonium:
+  pkg: "app.symfonik.music.player"
+  display_name: "Symfonium"
+  arch: "arm64-v8a"
+  icon: "https://www.google.com/s2/favicons?sz=128&domain=symfonium.app"
+  apk_source:
+    type: apkmirror
+    org: "tolriq"
+    slug: "symfonium-music-player-cast"
+  builds:
+    - key: "symfonium"
+      patch_sources: ["hxreborn"]

@@ -85,3 +85,18 @@ heval:
   owner: heval99
   repo: Heval-Morphe-Patches
   label: "💎 Heval"
+
+hushfacebook:
+  owner: SysAdminDoc
+  repo: Hushfacebook
+  label: "📘 Hushfacebook"
+
+hushmessenger:
+  owner: SysAdminDoc
+  repo: HushMessenger
+  label: "💬 HushMessenger"
+
+wake-old-hyphen-tiktok:
+  owner: Wake-Old-Hyphen
+  repo: hushfeed
+  label: "🌀 Wake-Old-Hyphen"

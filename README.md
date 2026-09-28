@@ -125,20 +125,25 @@ Each row is one **build** — a `key` under some app's `builds:` list in `catalo
 | `gboard` | `com.google.android.inputmethod.latin` | APKMirror | ⌨️ JasonWu Gboard |
 | `speedtest` | `org.zwanoo.android.speedtest` | APKMirror | ⚡ Rushiranpise, 🟢 Morphe |
 | `brave` | `com.brave.browser` | APKMirror | 🦁 dh6k |
-| `proton-vpn` | `ch.protonvpn.android` | APKMirror | 🍃 hoo-dles |
+| `proton-vpn` | `ch.protonvpn.android` | APKMirror | 🔥 hxreborn |
 | `tiktok` | `com.zhiliaoapp.musically` | APKMirror | 🎵 TikTok Patches, 🟢 Morphe |
 | `tiktok-hxreborn` | `com.zhiliaoapp.musically` | APKMirror | 🔥 hxreborn TikTok, 🟢 Morphe |
 | `tiktok-bluedragon` | `com.zhiliaoapp.musically` | APKMirror | 🔷 BlueIT Service, 🟢 Morphe |
 | `tiktok-hushfeed` | `com.zhiliaoapp.musically` | APKMirror | 🤫 Hushfeed, 🟢 Morphe |
 | `tiktok-kveld` | `com.zhiliaoapp.musically` | APKMirror | 🌙 Kveld, 🟢 Morphe |
+| `tiktok-wake-old-hyphen` | `com.zhiliaoapp.musically` | APKMirror | 🌀 Wake-Old-Hyphen, 🟢 Morphe |
 | `warp` | `com.cloudflare.onedotonedotonedotone` | APKMirror | ⚡ Rushiranpise |
 | `inshot` | `com.camerasideas.instashot` | APKMirror | 🎬 Hooman's Patches |
 | `google-photos` | `com.google.android.apps.photos` | APKMirror | ⚡ Rushiranpise |
 | `inure-github` | `app.simple.inure` | GitHub | ⚡ Rushiranpise |
 | `inure-play` | `app.simple.inure.play` | GitHub | ⚡ Rushiranpise |
-| `proton-pass` | `proton.android.pass` | APKMirror | ⚡ Rushiranpise |
+| `proton-pass` | `proton.android.pass` | APKMirror | ⚡ Rushiranpise, 🔥 hxreborn |
 | `notesnook` | `com.streetwriters.notesnook` | APKMirror | 🔥 hxreborn |
 | `fairemail` | `eu.faircode.email` | APKMirror | 💎 Heval |
+| `proton-mail` | `ch.protonmail.android` | APKMirror | 🔥 hxreborn |
+| `facebook` | `com.facebook.katana` | APKMirror | 📘 Hushfacebook |
+| `messenger` | `com.facebook.orca` | APKMirror | 💬 HushMessenger |
+| `symfonium` | `app.symfonik.music.player` | APKMirror | 🔥 hxreborn |
 
 "APKMirror" means the app's `apk_source.type` in `catalog/apps.yaml` is `apkmirror` — scraped from apkmirror.com through a [FlareSolverr](https://github.com/FlareSolverr/FlareSolverr) sidecar container that clears its Cloudflare challenge; "GitHub" means `apk_source.type` is `github` — downloaded directly from a GitHub release (`morphe_builder/fetchers/github_app.py`), which is faster and doesn't need FlareSolverr at all.
 
