@@ -64,6 +64,16 @@ def test_extract_variant_url_respects_force_build():
     assert _extract_variant_url(_parse(html), "build5678", "youtube") == "/build5678"
 
 
+def test_extract_variant_url_force_build_matches_dpi_and_version_cells():
+    html = f"""<html><body><div class="variants-table">
+        {_row("Foo 1.0 475019269", "arm64-v8a", "480dpi", "/android9", badge="BUNDLE")}
+        {_row("Foo 1.0 475019344", "arm64-v8a", "240-640dpi", "/android11", badge="BUNDLE")}
+    </div></body></html>"""
+    assert _extract_variant_url(_parse(html), "240-640dpi", "facebook") == "/android11"
+    assert _extract_variant_url(_parse(html), "475019344", "facebook") == "/android11"
+    assert _extract_variant_url(_parse(html), "999", "facebook") is None
+
+
 def test_variant_rows_ignores_rows_outside_variants_table():
     html = """<html><body>
         <div class="table-row">not scoped, should be ignored</div>

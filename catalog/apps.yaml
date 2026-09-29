@@ -1,43 +1,3 @@
-# Every app the pipeline patches.
-#
-# Top-level key = the app's slug. This is the identity used for signature
-# pinning (signatures/known_signatures.json) and for picking the app's
-# original-APK source below - it is NOT a CI job by itself.
-#
-# `apk_source` says where to download the *original*, unpatched APK from:
-#   type: apkmirror  -> org/slug/release_slug are the path segments
-#                        APKMirror uses, e.g. apkmirror.com/apk/<org>/<slug>/
-#                        `release_slug` is only needed when the release
-#                        page's own URL uses a different word than `slug`
-#                        (e.g. TikTok's folder is "tik-tok-including-
-#                        musical-ly" but its release pages say "tiktok").
-#                        Defaults to `slug` when omitted.
-#   type: github     -> owner/repo is a GitHub repo whose releases ship the
-#                        app directly (no APKMirror/FlareSolverr involved).
-#                        `asset_hint` narrows which release asset to pick
-#                        when a release has more than one .apk/.apkm file.
-#                        `tag_template` is the release tag naming pattern,
-#                        with `{version}` substituted in.
-#
-# `builds` is the list of patched outputs this app produces - almost always
-# one, but an app can have more than one for two different reasons:
-#   - the SAME patch source list is genuinely applied more than once with
-#     different settings (not used today, but supported)
-#   - the same app is patched from DIFFERENT patch sources, each producing
-#     its own separate release asset (reddit/reddit-adobo, the tiktok-*
-#     builds, twitter/twitter-x) - these share this one `apk_source` entry
-#     but are listed as separate `builds`, which is also what keeps each
-#     one a separate GitHub Actions matrix job and a separate signed .apk.
-# A build's `patch_sources` is always a list, even when it has one entry;
-# when it has more than one (e.g. speedtest: [rushi, morphe]), all of them
-# are applied together to produce that single build's one patched APK.
-#
-# Each build's `key` is what identifies it as a CI matrix job, as the
-# TARGET_APP value for a local/manual single-app run, and in the release
-# filename. `display_name` on a build overrides the app's own display_name
-# for that one build (only reddit-adobo and twitter-x need this); leave it
-# out to just inherit the app's display_name.
-
 youtube:
   pkg: "com.google.android.youtube"
   display_name: "YouTube"
@@ -51,14 +11,6 @@ youtube:
     - key: "youtube"
       patch_sources: ["morphe"]
       options:
-        # Keys are the patch's real option key (BaseCustomBrandingPatch.kt's
-        # stringOption(key = ...) in morphe-patches), not its UI title -
-        # "App name"/"App icon" are only shown in a GUI, the CLI needs
-        # customName/appIcon. appIcon's value must be one of the lowercase
-        # internal names (see iconStyleValues in that same file: black,
-        # dark, light, play, play_black, original, custom, or omit for
-        # automatic) - the capitalized display labels ("Black") are not
-        # valid values, only map keys for a dropdown.
         "Custom branding.customName": "YouTube"
         "Custom branding.appIcon": "Original"
 
@@ -375,6 +327,22 @@ facebook:
   builds:
     - key: "facebook"
       patch_sources: ["hushfacebook"]
+      force_build: "240-640dpi"
+      enable:
+        - "Stop Story auto-advance"
+        - "Tag suggestions only after @"
+        - "Tap to play"
+        - "Use the phone's emoji"
+        - "Download any video"
+        - "Don't send reel watch history"
+        - "Use the system font"
+        - "Clean up Reels"
+        - "Default comment order"
+        - "AMOLED black theme"
+        - "Block background-return feed refresh"
+        - "Hide Reels in the feed"
+        - "Hide Stories tray"
+        - "Open on a chosen tab"
 
 messenger:
   pkg: "com.facebook.orca"
@@ -389,6 +357,7 @@ messenger:
   builds:
     - key: "messenger"
       patch_sources: ["hushmessenger"]
+      force_build: "346013387"
 
 symfonium:
   pkg: "app.symfonik.music.player"

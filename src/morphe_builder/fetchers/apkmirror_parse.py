@@ -106,7 +106,7 @@ def extract_variant_url(tree: lxml.html.HtmlElement | None, force_build: str | N
         if link is None:
             continue
 
-        if force_build and force_build not in cell_text(cells[0]):
+        if force_build and force_build not in " ".join(cell_text(c) for c in cells):
             continue
 
         badge = next((b for b in cells[0].iter() if "apkm-badge" in classes(b)), None)
