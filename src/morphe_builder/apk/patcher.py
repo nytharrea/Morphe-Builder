@@ -50,12 +50,6 @@ def patch_apk(
     else:
         log.warn("Custom keystore credentials missing or file not found. Falling back to default Morphe testkey.")
 
-    for p in exclude or []:
-        cmd += ["--disable", p]
-
-    for p in enable or []:
-        cmd += ["--enable", p]
-
     options_by_patch: dict[str, list[tuple[str, str | None]]] = {}
     for dotted_key, value in (options or {}).items():
         patch_name, sep, option_key = dotted_key.partition(".")
@@ -66,26 +60,15 @@ def patch_apk(
         options_by_patch.setdefault(patch_name, []).append((option_key, value))
 
     for patch_name, patch_options in options_by_patch.items():
-        # -O is associated with the -e immediately before it, not looked up
-        # by patch name - so this patch needs its own -e here even if it's
-        # already in `enable` above (harmless: enabling an already-enabled
-        # patch again is a no-op), grouped with all of its own -O flags
-        # together, matching revanced-cli's own documented convention:
-        # -e "Patch name" -Okey1=value1 -Okey2=value2
-        #
-        # Every non-null value is wrapped in literal double quotes: the
-        # real OptionValueConverter (morphe-desktop's CommandUtils.kt)
-        # type-infers an unquoted value - "true"/"false" become booleans,
-        # anything parseable as a number becomes one, and a value ending
-        # in "f" or "L" is parsed as a float/long (crashing if the rest
-        # isn't numeric - an app name like "Half" would try to parse
-        # "Hal" as a float). Quoting forces it to stay the literal string
-        # from the catalog. The converter's own unquoting is just "drop
-        # the first and last character", so this is always safe even if
-        # the value itself contains quote characters.
-        cmd += ["--enable", patch_name]
         for option_key, value in patch_options:
             cmd.append(f"-O{option_key}" if value is None else f'-O{option_key}="{value}"')
+        cmd += ["--enable", patch_name]
+
+    for p in exclude or []:
+        cmd += ["--disable", p]
+
+    for p in enable or []:
+        cmd += ["--enable", p]
 
     cmd.append(apk)
 

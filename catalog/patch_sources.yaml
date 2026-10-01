@@ -100,3 +100,8 @@ wake-old-hyphen-tiktok:
   owner: Wake-Old-Hyphen
   repo: hushfeed
   label: "🌀 Wake-Old-Hyphen"
+
+hushgram:
+  owner: SysAdminDoc
+  repo: HushGram
+  label: "📸 HushGram"

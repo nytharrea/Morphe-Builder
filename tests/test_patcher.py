@@ -150,11 +150,7 @@ def test_command_includes_patches_arch_exclude_and_enable_flags(monkeypatch, tmp
     assert cmd[-1] == "input.apk"
 
 
-def test_options_become_dash_o_flags_grouped_with_an_enable_for_their_patch(monkeypatch, tmp_path):
-    """revanced-cli associates -O with the -e immediately before it (see
-    docs: `-e "Patch name" -Okey1=value1 -Okey2=value2`), not by looking
-    the patch name up - so each options-bearing patch needs its own -e
-    right next to its own -O flags, grouped together."""
+def test_options_precede_the_enable_flag_of_their_own_patch(monkeypatch, tmp_path):
     monkeypatch.setattr(patcher.settings, "ks_path", None)
     monkeypatch.setattr(patcher.log, "warn", lambda msg: None)
 
@@ -163,17 +159,14 @@ def test_options_become_dash_o_flags_grouped_with_an_enable_for_their_patch(monk
         "desktop.jar",
         ["patch-a.mpp"],
         "input.apk",
-        options={"Custom branding.App name": "YouTube Özel", "Custom branding.App icon": "Black"},
+        options={"Custom branding.App name": "YouTube Özel", "Custom branding.App icon": "black"},
     )
 
     cmd = captured["cmd"]
-    assert '-OApp name="YouTube Özel"' in cmd
-    assert '-OApp icon="Black"' in cmd
     enable_idx = cmd.index("Custom branding") - 1
     assert cmd[enable_idx] == "--enable"
-    # both -O flags for this one patch must be grouped right after its own
-    # --enable, not split apart by some other patch's flags in between
-    assert cmd[enable_idx + 2 : enable_idx + 4] == ['-OApp name="YouTube Özel"', '-OApp icon="Black"']
+    assert cmd[enable_idx - 2 : enable_idx] == ['-OApp name="YouTube Özel"', '-OApp icon="black"']
+    assert not any(part.startswith("-O") for part in cmd[enable_idx + 1 :])
 
 
 def test_options_for_different_patches_are_not_interleaved(monkeypatch, tmp_path):
@@ -190,7 +183,36 @@ def test_options_for_different_patches_are_not_interleaved(monkeypatch, tmp_path
 
     cmd = captured["cmd"]
     idx_a = cmd.index("Patch A")
-    assert cmd[idx_a + 1 : idx_a + 3] == ['-Okey1="v1"', '-Okey3="v3"']
+    idx_b = cmd.index("Patch B")
+    assert cmd[idx_a - 3 : idx_a] == ['-Okey1="v1"', '-Okey3="v3"', "--enable"]
+    assert cmd[idx_b - 2 : idx_b] == ['-Okey2="v2"', "--enable"]
+    assert idx_a < idx_b
+
+
+def test_option_groups_come_before_plain_enable_and_disable_flags(monkeypatch, tmp_path):
+    monkeypatch.setattr(patcher.settings, "ks_path", None)
+    monkeypatch.setattr(patcher.log, "warn", lambda msg: None)
+
+    apk_path, captured = _patch_common(monkeypatch, tmp_path, ["INFO: Saved to {apk_path}"])
+    patcher.patch_apk(
+        "desktop.jar",
+        ["patch-a.mpp"],
+        "input.apk",
+        exclude=["Bad patch"],
+        enable=["Extra patch"],
+        options={"Custom branding.customName": "YouTube", "Custom branding.appIcon": "original"},
+    )
+
+    cmd = captured["cmd"]
+    first_option_idx = cmd.index('-OcustomName="YouTube"')
+    assert cmd[first_option_idx : first_option_idx + 4] == [
+        '-OcustomName="YouTube"',
+        '-OappIcon="original"',
+        "--enable",
+        "Custom branding",
+    ]
+    assert first_option_idx < cmd.index("--disable")
+    assert first_option_idx < cmd.index("Extra patch")
 
 
 def test_option_with_none_value_omits_the_equals_sign(monkeypatch, tmp_path):

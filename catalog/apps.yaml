@@ -12,7 +12,7 @@ youtube:
       patch_sources: ["morphe"]
       options:
         "Custom branding.customName": "YouTube"
-        "Custom branding.appIcon": "Original"
+        "Custom branding.appIcon": "original"
 
 youtube-music:
   pkg: "com.google.android.apps.youtube.music"
@@ -28,7 +28,7 @@ youtube-music:
       patch_sources: ["morphe"]
       options:
         "Custom branding.customName": "YT Music"
-        "Custom branding.appIcon": "Original"
+        "Custom branding.appIcon": "original"
 
 reddit:
   pkg: "com.reddit.frontpage"
@@ -81,6 +81,23 @@ instagram:
   builds:
     - key: "instagram"
       patch_sources: ["piko"]
+    - key: "instagram-hushgram"
+      patch_sources: ["hushgram"]
+      # HushGram is checked against exactly one Instagram build: version code 385511871, which APKMirror lists
+      # as the arm64-v8a "480-640dpi" bundle of 449.0.0.52.84. Update this when HushGram moves to a newer Instagram.
+      force_build: "385511871"
+      display_name: "Instagram-HushGram"
+      enable:
+        - "Stop Story auto-advance"
+        - "Tap to play"
+        - "Turn off double tap to like"
+        - "View stories anonymously"
+        - "Don't send reel watch history"
+        - "Clean up Reels"
+        - "Default playback quality"
+        - "Hide the Reels tab"
+        - "Download any video"
+        - "Hide Reels in the feed"
 
 gboard:
   pkg: "com.google.android.inputmethod.latin"

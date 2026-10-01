@@ -122,6 +122,7 @@ Each row is one **build** — a `key` under some app's `builds:` list in `catalo
 | `twitter` | `com.twitter.android` | APKMirror | ✖️ Piko |
 | `twitter-x` | `com.twitter.android` | APKMirror | 🆕 Piko NewX, 🟢 Morphe |
 | `instagram` | `com.instagram.android` | APKMirror | ✖️ Piko |
+| `instagram-hushgram` | `com.instagram.android` | APKMirror | 📸 HushGram |
 | `gboard` | `com.google.android.inputmethod.latin` | APKMirror | ⌨️ JasonWu Gboard |
 | `speedtest` | `org.zwanoo.android.speedtest` | APKMirror | ⚡ Rushiranpise, 🟢 Morphe |
 | `brave` | `com.brave.browser` | APKMirror | 🦁 dh6k |
